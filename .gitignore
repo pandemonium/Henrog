@@ -1,0 +1,4 @@
+Core/bin
+Core/obj
+.paket/
+paket-files/
