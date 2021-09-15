@@ -28,7 +28,7 @@ module TransactionContext =
       let output = unitOfWork tx 
       tx.Commit ()
       output
-    with e -> Error <| DatabaseException e
+    with e -> throw <| DatabaseException e
 
 
 type ReadState =

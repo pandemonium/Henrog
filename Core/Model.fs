@@ -45,72 +45,291 @@ module UniqueIdentifier =
     Decode.guid |> Decode.map Uuid
 
 
-type PersonalIdentification = 
+type PersonalIdentity = 
   private Personnummer      of int
         | Samordningsnummer of int
 
-module PersonalIdentification =
+module PersonalIdentity =
   let number = function Personnummer      pin -> pin
                       | Samordningsnummer sam -> sam
 
   let asString = 
     number >> string
 
-  let encode : PersonalIdentification Encoder =
+  let encode : PersonalIdentity Encoder =
     function Personnummer      n -> [ "personnummer",      Encode.int n ]
            | Samordningsnummer n -> [ "samordningsnummer", Encode.int n ]
     >> Encode.object
 
-  let decode : PersonalIdentification Decoder =
+  let decode : PersonalIdentity Decoder =
     let read name constructor =
       Decode.field name Decode.int |> Decode.map constructor
     in [ read "personnummer"      Personnummer
          read "samordningsnummer" Samordningsnummer ]
        |> Decode.oneOf
 
+
+type Address =
+  { Street     : string
+    PostalCode : int
+    City       : string }
+
+module Address =
+  let encode : Address Encoder = fun it ->
+    [ "street",     Encode.string it.Street
+      "postalCode", Encode.int it.PostalCode
+      "city",       Encode.string it.City ]
+    |> Encode.object
+
+  let decode : Address Decoder =
+    Decode.object <| fun get ->
+      { Street     = get.Required.Field "street"     Decode.string
+        PostalCode = get.Required.Field "postalCode" Decode.int
+        City       = get.Required.Field "city"       Decode.string }
+
+
+type EstablishmentId = EstablishmentId of UniqueIdentifier
+
+type Establishment =
+  { Name    : string
+    Address : Address }
+
+type EstablishmentInfo = EstablishmentId * Establishment
+
+module Establishment =
+  let id (id, _) = id
+
+  let encodeId : EstablishmentId Encoder = fun (EstablishmentId uuid) ->
+    UniqueIdentifier.encode uuid
+
+  let encode : EstablishmentInfo Encoder = fun (id, it) ->
+    [ "id",   encodeId          id
+      "name", Encode.string     it.Name 
+      "address", Address.encode it.Address  ]
+    |> Encode.object
+
+  let decodeId : EstablishmentId Decoder =
+    UniqueIdentifier.decode |> Decode.map EstablishmentId
+
+  let decode : EstablishmentInfo Decoder =
+    let it =
+      Decode.object <| fun get ->
+        { Name    = get.Required.Field "name"    Decode.string
+          Address = get.Required.Field "address" Address.decode }
+      in Decode.tuple2 decodeId it
+
+
 type ContactId = ContactId of UniqueIdentifier
 
 type Contact =
-  { Pin      : PersonalIdentification
-    FullName : string }
+  { Pin      : PersonalIdentity
+    To       : EstablishmentId
+    FullName : string 
+    Address  : Address  }
 
 type ContactInfo = ContactId * Contact
 
 module Contact =
   let id (ContactId id, _) = id
 
+  let establishment (_, { To = to' }) = to'
+
   let encodeId : ContactId Encoder = fun (ContactId uuid) ->
     UniqueIdentifier.encode uuid
 
   let encode : ContactInfo Encoder = fun (id, it) ->
-    [ "id",       encodeId                      id
-      "pin",      PersonalIdentification.encode it.Pin
-      "fullName", Encode.string                 it.FullName ]
+    [ "id",       encodeId                id
+      "pin",      PersonalIdentity.encode it.Pin
+      "to",       Establishment.encodeId  it.To
+      "fullName", Encode.string           it.FullName 
+      "address",  Address.encode          it.Address ]
     |> Encode.object
 
   let decodeId : ContactId Decoder =
     UniqueIdentifier.decode |> Decode.map ContactId
 
   let decode : ContactInfo Decoder =
-    let data =
+    let it =
       Decode.object <| fun get ->
-        { Pin      = get.Required.Field "pin"      PersonalIdentification.decode
-          FullName = get.Required.Field "fullName" Decode.string }
-    in Decode.tuple2 decodeId data
+        { Pin      = get.Required.Field "pin"      PersonalIdentity.decode
+          To       = get.Required.Field "to"       Establishment.decodeId
+          FullName = get.Required.Field "fullName" Decode.string 
+          Address  = get.Required.Field "address"  Address.decode }
+    in Decode.tuple2 decodeId it
+
+type Contract = private Code of int
+
+type CaregiverId = CaregiverId of UniqueIdentifier
+
+type Caregiver =
+  { Self     : ContactId
+    With     : EstablishmentId
+    Contract : Contract }
+
+type CaregiverInfo = CaregiverId * Caregiver
+
+module Caregiver =
+  let establishment (_, info) = info.With
+
+  let private encodeContract : Contract Encoder = fun (Code code) ->
+    Encode.int code
+
+  let private decodeContract : Contract Decoder =
+    Decode.int |> Decode.map Code
+
+  let encodeId : CaregiverId Encoder = fun (CaregiverId uuid) ->
+    UniqueIdentifier.encode uuid
+
+  let encode : CaregiverInfo Encoder = fun (id, it) ->
+    [ "id",       encodeId               id
+      "self",     Contact.encodeId       it.Self
+      "with",     Establishment.encodeId it.With
+      "contract", encodeContract         it.Contract ]
+    |> Encode.object
+
+  let decodeId : CaregiverId Decoder =
+    UniqueIdentifier.decode |> Decode.map CaregiverId
+
+  let decode : CaregiverInfo Decoder =
+    let it =
+      Decode.object <| fun get ->
+        { Self     = get.Required.Field "self"     Contact.decodeId
+          With     = get.Required.Field "with"     Establishment.decodeId
+          Contract = get.Required.Field "contract" decodeContract }
+    in Decode.tuple2 decodeId it
 
 
-type Event = ContactAdded of Timestamp * ContactInfo
+type JournalId = JournalId of UniqueIdentifier
+
+type Journal =
+  { Subject       : ContactId
+    Caregiver     : CaregiverId
+    Establishment : EstablishmentId }
+
+type JournalInfo = JournalId * Journal
+
+module Journal =
+  let establishment (_, it) = it.Establishment
+
+  let encodeId : JournalId Encoder = fun (JournalId uuid) ->
+    UniqueIdentifier.encode uuid
+
+  let encode : JournalInfo Encoder = fun (id, it) ->
+    [ "id",            encodeId               id
+      "subject",       Contact.encodeId       it.Subject 
+      "caregiver",     Caregiver.encodeId     it.Caregiver
+      "establishment", Establishment.encodeId it.Establishment ]
+    |> Encode.object
+
+  let decodeId : JournalId Decoder =
+    UniqueIdentifier.decode |> Decode.map JournalId
+
+  let decode : JournalInfo Decoder =
+    let it =
+      Decode.object <| fun get ->
+        { Subject       = get.Required.Field "subject"       Contact.decodeId
+          Caregiver     = get.Required.Field "caregiver"     Caregiver.decodeId
+          Establishment = get.Required.Field "establishment" Establishment.decodeId }
+    in Decode.tuple2 decodeId it
+
+
+type Heading = HeadingKey of string
+
+type NoteBody = Text     of string
+              | Document of string
+
+type NoteId = NoteId of UniqueIdentifier
+
+type Note =
+  { Journal : JournalId
+    Heading : Heading
+    Body    : NoteBody }
+
+type NoteSignature =
+  { Journal  : JournalId
+    Note     : NoteId
+    SignedBy : CaregiverId }
+
+type NoteInfo = NoteId * Note
+
+module Note =
+  let journal (_, it : Note) = it.Journal
+
+  let encodeId : NoteId Encoder = fun (NoteId uuid) ->
+    UniqueIdentifier.encode uuid
+
+  let encodeHeading : Heading Encoder = fun (HeadingKey key) ->
+    Encode.string key
+
+  let encodeNoteBody : NoteBody Encoder =
+    function Text     t -> [ "text",     Encode.string t ]
+           | Document d -> [ "document", Encode.string d ]
+    >> Encode.object
+
+  let encodeNoteSignature : NoteSignature Encoder = fun it ->
+    [ "journal",  Journal.encodeId   it.Journal
+      "note",     encodeId           it.Note
+      "signedBy", Caregiver.encodeId it.SignedBy ]
+    |> Encode.object
+
+  let encode : NoteInfo Encoder = fun (id, it) ->
+    [ "id",      encodeId         id
+      "journal", Journal.encodeId it.Journal
+      "heading", encodeHeading    it.Heading
+      "body",    encodeNoteBody   it.Body ]
+    |> Encode.object
+
+(* There are several kinds of visits, each type implies a number of Headings. *)
+
+
+type Event = ContactAdded         of Timestamp * ContactInfo
+           | EstablishmentCreated of Timestamp * EstablishmentInfo
+           | CaregiverAdded       of Timestamp * CaregiverInfo
+           | JournalCreated       of Timestamp * JournalInfo
+           | NoteAdded            of Timestamp * NoteInfo
+           | NoteSigned           of Timestamp * NoteSignature
 
 module Event =
   type Kind = ContactAdded
+            | EstablishmentCreated
+            | CaregiverAdded
+            | JournalCreated
+            | NoteAdded
+            | NoteSigned
 
   module Kind =
     let ofEvent =
-      function Event.ContactAdded _ -> ContactAdded
+      function Event.ContactAdded         _ -> ContactAdded
+             | Event.EstablishmentCreated _ -> EstablishmentCreated
+             | Event.CaregiverAdded       _ -> CaregiverAdded
+             | Event.JournalCreated       _ -> JournalCreated
+             | Event.NoteAdded            _ -> NoteAdded
+             | Event.NoteSigned           _ -> NoteSigned
 
-    let name = 
-      function ContactAdded -> "ContactAdded"
+    let name =
+      function ContactAdded         -> "ContactAdded"
+             | EstablishmentCreated -> "EstablishmentCreated"
+             | CaregiverAdded       -> "CaregiverAdded"
+             | JournalCreated       -> "JournalCreated"
+             | NoteAdded            -> "NoteAdded"
+             | NoteSigned           -> "NoteSigned"
 
-  let externalRepresentation =
-      function Event.ContactAdded (at, data) as event ->
-                at, Kind.ofEvent event, Contact.id data |> UniqueIdentifier.asString, Contact.encode data
+  let private establishmentIdText (EstablishmentId uuid) =
+    UniqueIdentifier.asString uuid
+
+  let private journalIdText (JournalId uuid) =
+    UniqueIdentifier.asString uuid
+
+  let externalRepresentation = function
+  | Event.ContactAdded (at, info) ->
+    at, Contact.establishment info |> establishmentIdText, Contact.encode info
+  | Event.EstablishmentCreated (at, info) ->
+    at, Establishment.id info |> establishmentIdText, Establishment.encode info
+  | Event.CaregiverAdded (at, info) ->
+    at, Caregiver.establishment info |> establishmentIdText, Caregiver.encode info
+  | Event.JournalCreated (at, info) ->
+    at, Journal.establishment info |> establishmentIdText, Journal.encode info
+  | Event.NoteAdded (at, info) ->
+    at, Note.journal info |> journalIdText, Note.encode info
+  | Event.NoteSigned (at, info) ->
+    at, info.Journal |> journalIdText, Note.encodeNoteSignature info

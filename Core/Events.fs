@@ -19,11 +19,11 @@ type Memorandum =
 
 module Memorandum =
   let ofEvent id event =
-    let at, kind, aggregateId, json = 
+    let at, aggregateId, json = 
       Event.externalRepresentation event
     in { Id          = id
          At          = at
-         Kind        = kind
+         Kind        = Event.Kind.ofEvent event
          AggregateId = aggregateId
          Data        = json }
 
@@ -50,6 +50,9 @@ module Revision =
   let combine lhs rhs =
     { rhs with Contents = lhs.Contents ++ rhs.Contents }
 
+type Revision with
+  static member (+) (p, q) = Revision.combine p q
+
 
 type StreamCommit = 
   private Commit of Revision * StreamCommit | Nil
@@ -59,18 +62,18 @@ module StreamCommit =
     Commit (Revision.summon correlationId memo, Nil)
 
   (* Verify that these commits linearize correctly.. *)
-  let rec merge p q =
+  let rec join p q =
     match p, q with
     | Commit (lhs, p'), Commit (rhs, q') when lhs.Id = rhs.Id -> 
-      Commit (Revision.combine lhs rhs, merge p' q')
+      Commit (lhs ++ rhs, join p' q')
     | Commit (lhs, p), Commit (rhs, q) ->
-      Commit (rhs, Commit (lhs, merge q p))
+      Commit (rhs, Commit (lhs, join q p))
     | Nil, rhs -> rhs
     | lhs, Nil -> lhs
 
 type StreamCommit with
   static member Zero       = Nil
-  static member (+) (p, q) = StreamCommit.merge p q
+  static member (+) (p, q) = StreamCommit.join p q
 
 
 module PersistentRepresentation =
