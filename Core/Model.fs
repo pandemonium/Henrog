@@ -279,7 +279,90 @@ module Note =
       "body",    encodeNoteBody   it.Body ]
     |> Encode.object
 
+  let decodeId : NoteId Decoder =
+    UniqueIdentifier.decode |> Decode.map NoteId
+  
+  let decodeHeading : Heading Decoder =
+    Decode.string |> Decode.map HeadingKey
+
+  let decodeNoteBody : NoteBody Decoder =
+    let read name constructor =
+      Decode.field name Decode.string |> Decode.map constructor
+    in [ read "text"     Text
+         read "document" Document ]
+       |> Decode.oneOf
+
+  let decode : NoteInfo Decoder =
+    let it =
+      Decode.object <| fun get ->
+        { Journal = get.Required.Field "journal" Journal.decodeId
+          Heading = get.Required.Field "heading" decodeHeading
+          Body    = get.Required.Field "body"    decodeNoteBody }
+    in Decode.tuple2 decodeId it
+
 (* There are several kinds of visits, each type implies a number of Headings. *)
+type VisitationType = New | Recurring
+
+type VisitationId = VisitationId of UniqueIdentifier
+
+type Visitation =
+  { At        : EstablishmentId
+    Caregiver : CaregiverId
+    Subject   : ContactId
+    Type      : VisitationType }
+
+type VisitationNote =
+  { Visitation : VisitationId
+    Journal    : JournalId }
+
+type VisitationInfo = VisitationId * Visitation
+
+module Visitation =
+  let caregiver (_, it : Visitation) = it.Caregiver
+
+  let encodeId : VisitationId Encoder = fun (VisitationId uuid) ->
+    UniqueIdentifier.encode uuid
+
+  let encodeVisitationType : VisitationType Encoder =
+    function New       -> "new"
+           | Recurring -> "recurring"
+    >> Encode.string
+
+  let encodeVisitationNote : VisitationNote Encoder = fun it ->
+    [ "visitation", encodeId         it.Visitation
+      "journal",    Journal.encodeId it.Journal ]
+    |> Encode.object
+
+  let encode : VisitationInfo Encoder = fun (id, it) ->
+    [ "id",        encodeId               id
+      "at",        Establishment.encodeId it.At
+      "caregiver", Caregiver.encodeId     it.Caregiver
+      "subject",   Contact.encodeId       it.Subject
+      "type",      encodeVisitationType   it.Type ]
+    |> Encode.object
+
+  let decodeId : VisitationId Decoder =
+    UniqueIdentifier.decode |> Decode.map VisitationId
+
+  let decodeVisitationType : VisitationType Decoder =
+    function "new"       -> Decode.succeed New
+           | "recurring" -> Decode.succeed Recurring
+           | otherwise   -> Decode.fail $"No such VisitationType `{otherwise}`."
+    |> flip Decode.andThen Decode.string
+
+  let decodeVisitationNote : VisitationNote Decoder =
+    Decode.object <| fun get ->
+      { Visitation = get.Required.Field "visitation" decodeId
+        Journal    = get.Required.Field "journal"    Journal.decodeId }
+
+  let decode : VisitationInfo Decoder =
+    let it =
+      Decode.object <| fun get ->
+        { At        = get.Required.Field "at"        Establishment.decodeId
+          Caregiver = get.Required.Field "caregiver" Caregiver.decodeId
+          Subject   = get.Required.Field "subject"   Contact.decodeId
+          Type      = get.Required.Field "type"      decodeVisitationType }
+    in Decode.tuple2 decodeId it
 
 
 type Event = ContactAdded         of Timestamp * ContactInfo
@@ -288,6 +371,8 @@ type Event = ContactAdded         of Timestamp * ContactInfo
            | JournalCreated       of Timestamp * JournalInfo
            | NoteAdded            of Timestamp * NoteInfo
            | NoteSigned           of Timestamp * NoteSignature
+           | CaregiverVisited     of Timestamp * VisitationInfo
+           | VisitationNoted      of Timestamp * VisitationNote
 
 module Event =
   type Kind = ContactAdded
@@ -296,6 +381,8 @@ module Event =
             | JournalCreated
             | NoteAdded
             | NoteSigned
+            | CaregiverVisited
+            | VisitationNoted
 
   module Kind =
     let ofEvent =
@@ -305,6 +392,8 @@ module Event =
              | Event.JournalCreated       _ -> JournalCreated
              | Event.NoteAdded            _ -> NoteAdded
              | Event.NoteSigned           _ -> NoteSigned
+             | Event.CaregiverVisited     _ -> CaregiverVisited
+             | Event.VisitationNoted      _ -> VisitationNoted
 
     let name =
       function ContactAdded         -> "ContactAdded"
@@ -313,11 +402,16 @@ module Event =
              | JournalCreated       -> "JournalCreated"
              | NoteAdded            -> "NoteAdded"
              | NoteSigned           -> "NoteSigned"
+             | CaregiverVisited     -> "CaregiverVisited"
+             | VisitationNoted      -> "VisitationNoted"
 
   let private establishmentIdText (EstablishmentId uuid) =
     UniqueIdentifier.asString uuid
 
   let private journalIdText (JournalId uuid) =
+    UniqueIdentifier.asString uuid
+
+  let private caregiverIdText (CaregiverId uuid) =
     UniqueIdentifier.asString uuid
 
   let externalRepresentation = function
@@ -333,3 +427,7 @@ module Event =
     at, Note.journal info |> journalIdText, Note.encode info
   | Event.NoteSigned (at, info) ->
     at, info.Journal |> journalIdText, Note.encodeNoteSignature info
+  | Event.CaregiverVisited (at, info) ->
+    at, Visitation.caregiver info |> caregiverIdText, Visitation.encode info
+  | Event.VisitationNoted (at, info) ->
+    at, info.Journal |> journalIdText, Visitation.encodeVisitationNote info
