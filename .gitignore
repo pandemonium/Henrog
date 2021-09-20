@@ -2,3 +2,5 @@ Core/bin
 Core/obj
 .paket/
 paket-files/
+.fake
+.ionide

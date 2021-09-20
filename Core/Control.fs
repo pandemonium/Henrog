@@ -5,7 +5,7 @@ open FSharpPlus.Data
 open FSharpPlus.Control
 
 open Henrog.Domain.Model
-open Henrog.Domain.Events
+open Henrog.Domain.Archive
 open Henrog.Infrastructure.Persistence
 
 

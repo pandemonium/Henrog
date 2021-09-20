@@ -33,6 +33,8 @@ and DatabaseConfiguration =
 type UniqueIdentifier = Uuid of System.Guid
 
 module UniqueIdentifier =
+  let make = Uuid
+
   let asUuid (Uuid id) = id
 
   let asString =
@@ -292,6 +294,12 @@ module Note =
          read "document" Document ]
        |> Decode.oneOf
 
+  let decodeNoteSignature : NoteSignature Decoder =
+    Decode.object <| fun get ->
+      { Journal  = get.Required.Field "journal"  Journal.decodeId
+        Note     = get.Required.Field "note"     decodeId
+        SignedBy = get.Required.Field "signedBy" Caregiver.decodeId }
+
   let decode : NoteInfo Decoder =
     let it =
       Decode.object <| fun get ->
@@ -405,6 +413,18 @@ module Event =
              | CaregiverVisited     -> "CaregiverVisited"
              | VisitationNoted      -> "VisitationNoted"
 
+    let tryFromName =
+      function "ContactAdded"         -> Ok ContactAdded
+             | "EstablishmentCreated" -> Ok EstablishmentCreated
+             | "CaregiverAdded"       -> Ok CaregiverAdded
+             | "JournalCreated"       -> Ok JournalCreated
+             | "NoteAdded"            -> Ok NoteAdded
+             | "NoteSigned"           -> Ok NoteSigned
+             | "CaregiverVisited"     -> Ok CaregiverVisited
+             | "VisitationNoted"      -> Ok VisitationNoted
+             | otherwise              -> Wtf $"Unknown EventKind `{otherwise}`." 
+                                         |> throw
+
   let private establishmentIdText (EstablishmentId uuid) =
     UniqueIdentifier.asString uuid
 
@@ -415,19 +435,31 @@ module Event =
     UniqueIdentifier.asString uuid
 
   let externalRepresentation = function
-  | Event.ContactAdded (at, info) ->
-    at, Contact.establishment info |> establishmentIdText, Contact.encode info
-  | Event.EstablishmentCreated (at, info) ->
-    at, Establishment.id info |> establishmentIdText, Establishment.encode info
-  | Event.CaregiverAdded (at, info) ->
-    at, Caregiver.establishment info |> establishmentIdText, Caregiver.encode info
-  | Event.JournalCreated (at, info) ->
-    at, Journal.establishment info |> establishmentIdText, Journal.encode info
-  | Event.NoteAdded (at, info) ->
-    at, Note.journal info |> journalIdText, Note.encode info
-  | Event.NoteSigned (at, info) ->
-    at, info.Journal |> journalIdText, Note.encodeNoteSignature info
-  | Event.CaregiverVisited (at, info) ->
-    at, Visitation.caregiver info |> caregiverIdText, Visitation.encode info
-  | Event.VisitationNoted (at, info) ->
-    at, info.Journal |> journalIdText, Visitation.encodeVisitationNote info
+    | Event.ContactAdded (at, info) ->
+      at, Contact.establishment info |> establishmentIdText, Contact.encode info
+    | Event.EstablishmentCreated (at, info) ->
+      at, Establishment.id info |> establishmentIdText, Establishment.encode info
+    | Event.CaregiverAdded (at, info) ->
+      at, Caregiver.establishment info |> establishmentIdText, Caregiver.encode info
+    | Event.JournalCreated (at, info) ->
+      at, Journal.establishment info |> establishmentIdText, Journal.encode info
+    | Event.NoteAdded (at, info) ->
+      at, Note.journal info |> journalIdText, Note.encode info
+    | Event.NoteSigned (at, info) ->
+      at, info.Journal |> journalIdText, Note.encodeNoteSignature info
+    | Event.CaregiverVisited (at, info) ->
+      at, Visitation.caregiver info |> caregiverIdText, Visitation.encode info
+    | Event.VisitationNoted (at, info) ->
+      at, info.Journal |> journalIdText, Visitation.encodeVisitationNote info
+
+  let fromExternalRepresentation at : Kind -> Event Decoder =
+    let production constructor decoder =
+      Decode.map (curry constructor at) decoder
+    in function ContactAdded         -> production Event.ContactAdded         Contact.decode
+              | EstablishmentCreated -> production Event.EstablishmentCreated Establishment.decode
+              | CaregiverAdded       -> production Event.CaregiverAdded       Caregiver.decode
+              | JournalCreated       -> production Event.JournalCreated       Journal.decode
+              | NoteAdded            -> production Event.NoteAdded            Note.decode
+              | NoteSigned           -> production Event.NoteSigned           Note.decodeNoteSignature
+              | CaregiverVisited     -> production Event.CaregiverVisited     Visitation.decode
+              | VisitationNoted      -> production Event.VisitationNoted      Visitation.decodeVisitationNote

@@ -4,6 +4,7 @@ open FSharpPlus
 open FSharpPlus.Data
 open FSharpPlus.Control
 
+open System
 open System.Data
 open System.Reflection
 
@@ -61,6 +62,7 @@ module ReadState =
     { resetOrdinal state with CanRead = state.Reader.Read () }
 
 
+(* StateT instead? *)
 type 'a Query = State<ReadState, 'a>
 
 module Query =
@@ -91,9 +93,9 @@ module Query =
     | Return x ->
       return x
     | Continue f ->
-      do! State.modify ReadState.nextRow
-      let! canRead = State.gets ReadState.canRead
-      
+      do! modify ReadState.nextRow
+      let! canRead = gets ReadState.canRead
+
       if canRead
         then let! x = query
              let xs = f <| Emit x
@@ -113,10 +115,68 @@ module Query =
     State.eval query
 
 
+type Parameters = Object    of obj 
+                | List      of Parameter list
+                | Composite of Parameters * Parameters
+
+and Parameter = PutString    of string    Put
+              | PutInt       of int       Put
+              | PutGuid      of Guid      Put
+              | PutDateTime  of DateTime  Put
+              | PutTimestamp of Timestamp Put
+              | PutDecimal   of decimal   Put
+              | PutFloat     of float     Put
+              | PutDouble    of double    Put
+              | PutBool      of bool      Put
+
+and 'a Put = Put of 'a * string
+
+type Put = ApplyPut with
+  static member inline ($) (ApplyPut, x : Guid)      = curry Put x >> PutGuid
+  static member inline ($) (ApplyPut, x : string)    = curry Put x >> PutString
+  static member inline ($) (ApplyPut, x : int)       = curry Put x >> PutInt
+  static member inline ($) (ApplyPut, x : DateTime)  = curry Put x >> PutDateTime
+  static member inline ($) (ApplyPut, x : Timestamp) = curry Put x >> PutTimestamp
+
+module Parameter =
+  type Flat = string * Type * obj 
+
+  let flatten : Parameter -> Flat =
+    function PutString (Put (x, name)) -> name, typeof<string>, x :> obj
+           | otherwise                 -> failwith "hi"
+
+  let name  = flatten >> fun (x, _, _) -> x
+  let type' = flatten >> fun (_, x, _) -> x
+  let value = flatten >> fun (_, _, x) -> x
+
+  let inline put name value = (ApplyPut $ value) name
+
 module Command =
-  let parameterize (command : IDbCommand) =
+
+  (* This stuff is not good. *)
+  let parameterize (command : IDbCommand) (parameters : Parameter list) =
     let converter = System.ComponentModel.TypeDescriptor.GetConverter typeof<DbType>
 
+    let resolveDbType (tpe : Type) =
+      let typeName = tpe.Name
+      if typeName = "Instant" then DbType.DateTime2
+      else downcast converter.ConvertFrom typeName 
+    
+    let mkParam (parameter : Parameter) =
+      let initialize (param : IDbDataParameter) =
+        param.ParameterName <- Parameter.name parameter
+        param.DbType        <- Parameter.type' parameter |> resolveDbType 
+        param.Value         <- Parameter.value parameter
+      in command.CreateParameter ()
+         |> tap initialize
+
+    let addAll (collection : IDataParameterCollection) =
+      List.iter (mkParam >> collection.Add >> ignore) parameters
+    in addAll command.Parameters
+
+  let introspect (command : IDbCommand) =
+    let converter = System.ComponentModel.TypeDescriptor.GetConverter typeof<DbType>
+  
     let resolveDbType (property : PropertyInfo) =
       let typeName = property.PropertyType.Name
       if typeName = "Instant" then DbType.DateTime2
@@ -140,29 +200,45 @@ module Command =
 
 type 'a UnitOfWork = ReaderT<IDbTransaction, 'a Out>
 
+module Parameters =
+  let inline object x = 
+    x :> obj |> Object
+
+  let inline list xs =
+    List xs
+
+  let rec apply command =
+    function Object object    -> Command.introspect command object |> ignore
+           | List parameters  -> Command.parameterize command parameters
+           | Composite (p, q) -> apply command p; apply command q
+
+type Parameters with
+  static member (+) (p, q) = Composite (p, q)
+
 module UnitOfWork =
-  let createCommand text data : IDbCommand UnitOfWork = 
+  let createCommand text parameters : IDbCommand UnitOfWork =
     monad { let! tx = ask
-            let initialze c =
-              Command.parameterize c data |> ignore
-              c.Transaction <- tx
+            let initialze (command : IDbCommand) =
+              Parameters.apply command parameters
+              command.CommandText <- text
+              command.Transaction <- tx
             return tx.Connection.CreateCommand ()
                    |> tap initialze }
 
-  let write text data : int UnitOfWork = 
+  let write text data : int UnitOfWork =
     monad { use! command = createCommand text data
             try return command.ExecuteNonQuery ()
-            with e -> 
-              return! Out.error DatabaseException e }
+            with e ->
+              return! throw <| DatabaseException e }
 
-  let read text data query : 'a UnitOfWork = 
-    monad { use! command = createCommand text data    
+  let read text data query : 'a UnitOfWork =
+    monad { use! command = createCommand text data
             try use dataReader = command.ExecuteReader ()
                 return dataReader
                        |> ReadState.make
                        |> Query.apply query
-            with e -> 
-              return! Out.error DatabaseException e }
+            with e ->
+              return! throw <| DatabaseException e }
 
   let apply connector work : 'a Out =
     TransactionContext.demarcation connector
