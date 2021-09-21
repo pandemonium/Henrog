@@ -213,6 +213,7 @@ module Parameters =
            | Composite (p, q) -> apply command p; apply command q
 
 type Parameters with
+  static member Zero       = List []
   static member (+) (p, q) = Composite (p, q)
 
 module UnitOfWork =

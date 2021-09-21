@@ -122,8 +122,11 @@ module PersistentRepresentation =
     in ignore <!> xs
 
 
-module Archive =
-  type Term =
+module Query =
+  type Expression = Select of Term
+                  | Or     of Expression * Expression
+                  | And    of Expression * Expression
+  and Term =
     { Id            : UniqueIdentifier Predicate
       At            : Timestamp        Predicate
       Kind          : Event.Kind       Predicate
@@ -131,25 +134,28 @@ module Archive =
       CorrelationId : UniqueIdentifier Predicate }
 
   and 'a Predicate = This   of 'a
-                   | OneOf  of 'a (* How to solve this? *)
+                   | OneOf  of 'a list (* How to solve this? *)
                    | After  of 'a
                    | Before of 'a
                    | Any
 
-  and Expression = Literal of Term
-                 | Or      of Expression * Expression
-                 | And     of Expression * Expression
-
   module Predicate =
     let apply formal actual =
-      function This   x -> $"{formal} = {actual}"
-             | OneOf  x -> ""
-             | After  x -> ""
-             | Before x -> ""
-             | Any      -> ""
+      let apply' op = $"{formal} {op} {actual}"
+      let parameters =
+        mapi (fun i _ -> sprintf "@%s%d" actual i)
+        >> String.concat ", "
+      in function This   x -> apply' "="
+                | OneOf xs -> $"{formal} IN ({parameters xs})"
+                | After  x -> apply' ">"
+                | Before x -> apply' "<"
+                | Any      -> ""
 
-  let (|Predicate|_|) =
-    function This x | OneOf x | After x | Before x -> Some x | Any -> None
+  let (|One|_|) =
+    function This x | After x | Before x -> Some x | OneOf _ | Any -> None
+
+  let (|Many|_|) =
+    function OneOf x -> Some x | otherwise -> None
 
   module Term =
     let any =
@@ -159,45 +165,77 @@ module Archive =
       summon any
 
     let inline put name adapt =
-        function Predicate x ->
-                  adapt x
-                  |> Persistence.Parameter.put name
-                  |> Some
-               | otherwise -> None
+      function One x ->
+                adapt x
+                |> Persistence.Parameter.put name
+                |> Some
+             | otherwise -> None
 
-    let inline parameters term =
-      [ term.Id            |> put "id"           UniqueIdentifier.asUuid 
-        term.At            |> put "timestamp"    id
-        term.Kind          |> put "kind"         Event.Kind.name
-        term.AggregateId   |> put "aggregateId"  id 
-        term.CorrelationId |> put "correlatonId" UniqueIdentifier.asUuid ]
-      |> choose id
-      |> Persistence.Parameters.list
+    let inline putMany name adapt =
+      (* This name will collide with other branches using a OneOf with the same
+         base parameter name. *)
+      let freshName i =
+        Persistence.Parameter.put $"{name}{i}"
+      in function Many xs ->
+                   adapt <!> xs
+                   |> mapi freshName 
+                   |> Persistence.Parameters.list
+                   |> Some
+                | otherwise -> None
 
-    let renderQuery =
-      function x -> ""
+    (* Term -> Persistence.Parameters State. *)
+    (* The State can contain a base for fresh identifiers for array parameters. *)
+    let inline parameters term : Persistence.Parameters =
+      let ones = 
+        [ term.Id            |> put "id"           UniqueIdentifier.asUuid 
+          term.At            |> put "timestamp"    id
+          term.Kind          |> put "kind"         Event.Kind.name
+          term.AggregateId   |> put "aggregateId"  id 
+          term.CorrelationId |> put "correlatonId" UniqueIdentifier.asUuid ]
+        |> choose id
+        |> Persistence.Parameters.list
+
+      let manies =
+        [ term.Id            |> putMany "id"           UniqueIdentifier.asUuid 
+          term.At            |> putMany "timestamp"    id
+          term.Kind          |> putMany "kind"         Event.Kind.name
+          term.AggregateId   |> putMany "aggregateId"  id 
+          term.CorrelationId |> putMany "correlatonId" UniqueIdentifier.asUuid ]
+        |> choose id
+        |> sum
+
+      in ones ++ manies
+
+    let translate (prefix : string) term =
+      let apply symbol = 
+        Predicate.apply $"{prefix}.{symbol}"
+      in [ term.Id            |> apply "Id"            "id"
+           term.At            |> apply "At"            "at"
+           term.Kind          |> apply "Kind"          "kind"
+           term.AggregateId   |> apply "AggregateId"   "aggregateId"
+           term.CorrelationId |> apply "CorrelationId" "correlationId" ]
+         |> sum
 
 
   module Expression =
-    let this = Literal
+    let this = Select
     let and' = curry And
     let or'  = curry Or
 
     let rec parameters =
-      function Literal t  -> Term.parameters t
+      function Select t   -> Term.parameters t
              | And (p, q) -> parameters p ++ parameters q
-             | Or (p, q)  -> parameters p ++ parameters q
+             | Or  (p, q) -> parameters p ++ parameters q
 
-    let rec renderConditions =
-      function Literal t  -> Term.renderQuery t
-             | And (p, q) -> $"{renderConditions p} AND {renderConditions q}"
-             | Or (p, q)  -> $"{renderConditions p} OR {renderConditions q}"
+    let query alias =
+      let rec reify =
+        function Select t   -> Term.translate alias t
+               | And (p, q) -> $"{reify p} AND {reify q}"
+               | Or (p, q)  -> $"{reify p} OR {reify q}"
+      in reify
 
-  let query (filter : Expression) : Event list Persistence.UnitOfWork = monad {
-    let renderQuery : string =
-      failwith "hi"
-
-    let text       = renderQuery
+  let evaluate (filter : Expression) : Event list Persistence.UnitOfWork = monad {
+    let text       = Expression.query "e" filter
     let parameters = Expression.parameters filter
 
     let decodeMemorandum (memo : Memorandum) =
