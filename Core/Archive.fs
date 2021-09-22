@@ -123,7 +123,7 @@ module PersistentRepresentation =
 
 
 module Query =
-  type Expression = Select of Term
+  type Expression = Literal of Term
                   | Or     of Expression * Expression
                   | And    of Expression * Expression
   and Term =
@@ -141,14 +141,14 @@ module Query =
 
   module Predicate =
     let apply formal actual =
-      let apply' op = $"{formal} {op} {actual}"
+      let applyOp op = $"{formal} {op} @{actual}"
       let parameters =
         mapi (fun i _ -> sprintf "@%s%d" actual i)
         >> String.concat ", "
-      in function This   x -> apply' "="
+      in function This   x -> applyOp "="
                 | OneOf xs -> $"{formal} IN ({parameters xs})"
-                | After  x -> apply' ">"
-                | Before x -> apply' "<"
+                | After  x -> applyOp ">"
+                | Before x -> applyOp "<"
                 | Any      -> ""
 
   let (|One|_|) =
@@ -161,23 +161,25 @@ module Query =
     let any =
       { Id = Any; At = Any; Kind = Any; AggregateId = Any; CorrelationId = Any }
 
-    let select (summon : Term -> Term) : Term =
-      summon any
+    let select (summon : Term -> Term) parent : Term =
+      summon parent
 
-    let inline put name adapt =
+//    let id 
+
+    let inline put name convert =
       function One x ->
-                adapt x
+                convert x
                 |> Persistence.Parameter.put name
                 |> Some
              | otherwise -> None
 
-    let inline putMany name adapt =
+    let inline putMany name convert =
       (* This name will collide with other branches using a OneOf with the same
          base parameter name. *)
       let freshName i =
         Persistence.Parameter.put $"{name}{i}"
       in function Many xs ->
-                   adapt <!> xs
+                   convert <!> xs
                    |> mapi freshName 
                    |> Persistence.Parameters.list
                    |> Some
@@ -188,7 +190,7 @@ module Query =
     let inline parameters term : Persistence.Parameters =
       let ones = 
         [ term.Id            |> put "id"           UniqueIdentifier.asUuid 
-          term.At            |> put "timestamp"    id
+          term.At            |> put "at"           id
           term.Kind          |> put "kind"         Event.Kind.name
           term.AggregateId   |> put "aggregateId"  id 
           term.CorrelationId |> put "correlatonId" UniqueIdentifier.asUuid ]
@@ -197,7 +199,7 @@ module Query =
 
       let manies =
         [ term.Id            |> putMany "id"           UniqueIdentifier.asUuid 
-          term.At            |> putMany "timestamp"    id
+          term.At            |> putMany "at"           id
           term.Kind          |> putMany "kind"         Event.Kind.name
           term.AggregateId   |> putMany "aggregateId"  id 
           term.CorrelationId |> putMany "correlatonId" UniqueIdentifier.asUuid ]
@@ -207,8 +209,8 @@ module Query =
       in ones ++ manies
 
     let translate (prefix : string) term =
-      let apply symbol = 
-        Predicate.apply $"{prefix}.{symbol}"
+      let apply field = 
+        Predicate.apply $"{prefix}.{field}"
       in [ term.Id            |> apply "Id"            "id"
            term.At            |> apply "At"            "at"
            term.Kind          |> apply "Kind"          "kind"
@@ -218,20 +220,20 @@ module Query =
 
 
   module Expression =
-    let this = Select
-    let and' = curry And
-    let or'  = curry Or
+    let literal = Literal
+    let and'    = curry And
+    let or'     = curry Or
 
     let rec parameters =
-      function Select t   -> Term.parameters t
+      function Literal t  -> Term.parameters t
              | And (p, q) -> parameters p ++ parameters q
              | Or  (p, q) -> parameters p ++ parameters q
 
     let query alias =
       let rec reify =
-        function Select t   -> Term.translate alias t
-               | And (p, q) -> $"{reify p} AND {reify q}"
-               | Or (p, q)  -> $"{reify p} OR {reify q}"
+        function Literal t  -> Term.translate alias t
+               | And (p, q) -> $"({reify p}) AND ({reify q})"
+               | Or (p, q)  -> $"({reify p}) OR ({reify q})"
       in reify
 
   let evaluate (filter : Expression) : Event list Persistence.UnitOfWork = monad {

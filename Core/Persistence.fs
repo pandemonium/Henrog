@@ -207,6 +207,8 @@ module Parameters =
   let inline list xs =
     List xs
 
+  (* Add a dedup? *)
+  (* Add a simplify? *)
   let rec apply command =
     function Object object    -> Command.introspect command object |> ignore
            | List parameters  -> Command.parameterize command parameters
