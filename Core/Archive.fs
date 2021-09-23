@@ -57,8 +57,11 @@ module Memorandum =
             return make id at aggregateId <!> data <*> kind }
 
   let write correlationId (memo : Memorandum) : unit Persistence.UnitOfWork =
-    let insert : string = failwith "hi"
-    let record =
+    let insert = 
+      """INSERT
+           INTO journal (event_id, correlation_id, at, kind, aggregate_id, data)
+         VALUES (@id, @correlationId, @at, @kind, @aggregateId, @data)"""
+    let mkRecord =
       {| Id            = memo.Id       |> UniqueIdentifier.asUuid
          CorrelationId = correlationId |> UniqueIdentifier.asUuid
          At            = memo.At
@@ -66,7 +69,7 @@ module Memorandum =
          AggregateId   = memo.AggregateId
          Data          = memo.Data     |> Encode.toString 0 |}
       |> Persistence.Parameters.object
-    in ignore <!> Persistence.UnitOfWork.write insert record
+    in ignore <!> Persistence.UnitOfWork.write insert mkRecord
 
 
 type Revision =
@@ -209,13 +212,13 @@ module Query =
       in ones ++ manies
 
     let translate (prefix : string) term =
-      let apply field = 
+      let apply field =
         Predicate.apply $"{prefix}.{field}"
-      in [ term.Id            |> apply "Id"            "id"
-           term.At            |> apply "At"            "at"
-           term.Kind          |> apply "Kind"          "kind"
-           term.AggregateId   |> apply "AggregateId"   "aggregateId"
-           term.CorrelationId |> apply "CorrelationId" "correlationId" ]
+      in [ term.Id            |> apply "event_id"       "id"
+           term.At            |> apply "at"             "at"
+           term.Kind          |> apply "kind"           "kind"
+           term.AggregateId   |> apply "aggregate_id"   "aggregateId"
+           term.CorrelationId |> apply "correlation_id" "correlationId" ]
          |> sum
 
 
@@ -230,23 +233,33 @@ module Query =
              | Or  (p, q) -> parameters p ++ parameters q
 
     let query alias =
-      let rec reify =
+      let where (clause : string) =
+        if clause.Length <> 0
+        then $"WHERE {clause}" else ""
+
+      let select whereClause =
+        $"""|SELECT *
+            |  FROM journal {alias}
+            | {whereClause}
+            | ORDER BY {alias}.At"""
+        |> String.stripMargin
+
+      let rec reifyConditions =
         function Literal t  -> Term.translate alias t
-               | And (p, q) -> $"({reify p}) AND ({reify q})"
-               | Or (p, q)  -> $"({reify p}) OR ({reify q})"
-      in reify
+               | And (p, q) -> $"({reifyConditions p}) AND ({reifyConditions q})"
+               | Or  (p, q) -> $"({reifyConditions p}) OR ({reifyConditions q})"
+      in select << where << reifyConditions
 
-  let evaluate (filter : Expression) : Event list Persistence.UnitOfWork = monad {
-    let text       = Expression.query "e" filter
-    let parameters = Expression.parameters filter
-
-    let decodeMemorandum (memo : Memorandum) =
-      Memorandum.decodeEvent memo.At memo.Kind memo.Data
-
-    let! xs =
-      bind decodeMemorandum <!> Memorandum.read
-      |> fun q -> sequence <!> Persistence.Query.list q
-      |> Persistence.UnitOfWork.read text parameters
-
-    return! lift xs
-  }
+  let evaluate (filter : Expression) : Event list Persistence.UnitOfWork = 
+    monad { let text       = Expression.query "e" filter
+            let parameters = Expression.parameters filter
+        
+            let decodeMemorandum (memo : Memorandum) =
+              Memorandum.decodeEvent memo.At memo.Kind memo.Data
+        
+            let! xs =
+              bind decodeMemorandum <!> Memorandum.read
+              |> fun q -> sequence <!> Persistence.Query.list q
+              |> Persistence.UnitOfWork.read text parameters
+        
+            return! lift xs }

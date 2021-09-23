@@ -19,9 +19,18 @@ type Environment =
   { Interpreter   : IRuntime 
     Configuration : Configuration }
 
+module Environment =
+  let make interpreter configuration =
+    { Interpreter   = interpreter
+      Configuration = configuration }
+
 type 'a EventStream = 'a * StreamCommit
 
 type 'a Effect = ReaderT<Environment, 'a EventStream Out WriterT>
+
+module Effect =
+  let unsafeRun effect environment =
+    ReaderT.run effect environment
 
 type Context =
   { Environment   : Environment
@@ -73,6 +82,9 @@ module UniqueIdentifier =
     monad { let! context = Script.context
             return context.Environment.Interpreter.FreshIdentifier () }
 
+  let makeFresh constructor =
+    constructor <!> fresh
+
   let correlationId : UniqueIdentifier Script =
     monad { let! context = Script.context
             return context.CorrelationId }
@@ -100,3 +112,9 @@ module EventStream =
       let commit =
           runWithContext write >> map fst >> liftOut
       in context >>= commit
+
+module ScriptingHost =
+  let execute script environment =
+    EventStream.flush script
+    |> flip Script.run environment
+    |> (<!>) fst

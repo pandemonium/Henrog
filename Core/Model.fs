@@ -9,6 +9,15 @@ open Thoth.Json.Net
 open NodaTime
 
 
+module String =
+  let stripMargin (text : string) =
+    let strip =
+      String.trimStart " "
+      >> String.trimStart "|"
+
+    in strip <!> String.split [| "\n" |] text
+       |> String.concat "\n"
+
 (* Move this stuff to a more primordial layer. *)
 type Error = Wtf               of string 
            | Json              of string
@@ -48,10 +57,12 @@ module UniqueIdentifier =
 
 
 type PersonalIdentity = 
-  private Personnummer      of int
-        | Samordningsnummer of int
+  private Personnummer      of int64
+        | Samordningsnummer of int64
 
 module PersonalIdentity =
+  let unsafePersonnummer = Personnummer
+
   let number = function Personnummer      pin -> pin
                       | Samordningsnummer sam -> sam
 
@@ -59,13 +70,13 @@ module PersonalIdentity =
     number >> string
 
   let encode : PersonalIdentity Encoder =
-    function Personnummer      n -> [ "personnummer",      Encode.int n ]
-           | Samordningsnummer n -> [ "samordningsnummer", Encode.int n ]
+    function Personnummer      n -> [ "personnummer",      Encode.int64 n ]
+           | Samordningsnummer n -> [ "samordningsnummer", Encode.int64 n ]
     >> Encode.object
 
   let decode : PersonalIdentity Decoder =
     let read name constructor =
-      Decode.field name Decode.int |> Decode.map constructor
+      Decode.field name Decode.int64 |> Decode.map constructor
     in [ read "personnummer"      Personnummer
          read "samordningsnummer" Samordningsnummer ]
        |> Decode.oneOf
