@@ -48,11 +48,12 @@ module Memorandum =
        |> Result.mapError Json
 
   let read : Memorandum Out Persistence.Query = 
-    monad { let! id          = UniqueIdentifier.make     <!> Query.getGuid
-            let! at          = Timestamp.FromDateTimeUtc <!> Query.getDateTime
-            let! kind        = Event.Kind.tryFromName    <!> Query.getString
-            let! aggregateId = Query.getString
-            let! data        = parseJsonText             <!> Query.getString
+    monad { let! id            = UniqueIdentifier.make     <!> Query.getGuid
+            let! correlationId = UniqueIdentifier.make     <!> Query.getGuid
+            let! at            = Query.getInstant
+            let! kind          = Event.Kind.tryFromName    <!> Query.getString
+            let! aggregateId   = Query.getString
+            let! data          = parseJsonText             <!> Query.getString
 
             return make id at aggregateId <!> data <*> kind }
 
@@ -127,8 +128,8 @@ module PersistentRepresentation =
 
 module Query =
   type Expression = Literal of Term
-                  | Or     of Expression * Expression
-                  | And    of Expression * Expression
+                  | Or      of Expression * Expression
+                  | And     of Expression * Expression
   and Term =
     { Id            : UniqueIdentifier Predicate
       At            : Timestamp        Predicate
@@ -137,7 +138,7 @@ module Query =
       CorrelationId : UniqueIdentifier Predicate }
 
   and 'a Predicate = This   of 'a
-                   | OneOf  of 'a list (* How to solve this? *)
+                   | OneOf  of 'a list
                    | After  of 'a
                    | Before of 'a
                    | Any
@@ -161,14 +162,6 @@ module Query =
     function OneOf x -> Some x | otherwise -> None
 
   module Term =
-    let any =
-      { Id = Any; At = Any; Kind = Any; AggregateId = Any; CorrelationId = Any }
-
-    let select (summon : Term -> Term) parent : Term =
-      summon parent
-
-//    let id 
-
     let inline put name convert =
       function One x ->
                 convert x
@@ -227,6 +220,31 @@ module Query =
     let and'    = curry And
     let or'     = curry Or
 
+    let any =
+      { Id = Any; At = Any; Kind = Any; AggregateId = Any; CorrelationId = Any }
+
+    let star = literal any
+
+    let select (construct : Term -> Term) =
+      construct any |> literal
+
+    module SuchThat =
+      (* This could also be a State monad. *)
+      let id predicate x (parent : Term) =
+        { parent with Id = predicate x }
+
+      let at predicate x (parent : Term) =
+        { parent with At = predicate x }
+
+      let kind predicate x (parent : Term) =
+        { parent with Kind = predicate x }
+
+      let aggregateId predicate x (parent : Term) =
+        { parent with AggregateId = predicate x }
+
+      let correlationId predicate x (parent : Term) =
+        { parent with CorrelationId = predicate x }
+
     let rec parameters =
       function Literal t  -> Term.parameters t
              | And (p, q) -> parameters p ++ parameters q
@@ -238,7 +256,8 @@ module Query =
         then $"WHERE {clause}" else ""
 
       let select whereClause =
-        $"""|SELECT *
+        $"""|SELECT {alias}.event_id, {alias}.correlation_id, {alias}.at, 
+            |       {alias}.kind, {alias}.aggregate_id, {alias}.data
             |  FROM journal {alias}
             | {whereClause}
             | ORDER BY {alias}.At"""

@@ -79,10 +79,14 @@ module Query =
       else return! map Some query
   }
 
+  let private toInstant (dt : DateTime) =
+    dt.ToUniversalTime () |> NodaTime.Instant.FromDateTimeUtc
+
   let getString   = field (fun r -> r.GetString)
   let getInt      = field (fun r -> r.GetInt32)
   let getGuid     = field (fun r -> r.GetGuid)
   let getDateTime = field (fun r -> r.GetDateTime)
+  let getInstant  = field (fun r -> r.GetDateTime >> toInstant)
   let getDecimal  = field (fun r -> r.GetDecimal)
   let getFloat    = field (fun r -> r.GetFloat)
   let getDouble   = field (fun r -> r.GetDouble)

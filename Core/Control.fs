@@ -48,8 +48,7 @@ module Script =
   let liftUnitOfWork work : 'a Script = 
     monad { let! context = context
             return! context.Environment.Interpreter.RunUnitOfWork work
-                    |> lift
-                    |> lift }
+                    |> liftOut }
 
   let makeContext env : Context =
     { Environment   = env

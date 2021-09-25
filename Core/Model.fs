@@ -116,8 +116,8 @@ module Establishment =
     UniqueIdentifier.encode uuid
 
   let encode : EstablishmentInfo Encoder = fun (id, it) ->
-    [ "id",   encodeId          id
-      "name", Encode.string     it.Name 
+    [ "id",      encodeId       id
+      "name",    Encode.string  it.Name 
       "address", Address.encode it.Address  ]
     |> Encode.object
 
@@ -129,7 +129,7 @@ module Establishment =
       Decode.object <| fun get ->
         { Name    = get.Required.Field "name"    Decode.string
           Address = get.Required.Field "address" Address.decode }
-      in Decode.tuple2 decodeId it
+      in Decode.map2 tuple2 (Decode.field "id" decodeId) it
 
 
 type ContactId = ContactId of UniqueIdentifier
@@ -168,7 +168,7 @@ module Contact =
           To       = get.Required.Field "to"       Establishment.decodeId
           FullName = get.Required.Field "fullName" Decode.string 
           Address  = get.Required.Field "address"  Address.decode }
-    in Decode.tuple2 decodeId it
+    in Decode.map2 tuple2 (Decode.field "id" decodeId) it
 
 type Contract = private Code of int
 
@@ -209,7 +209,8 @@ module Caregiver =
         { Self     = get.Required.Field "self"     Contact.decodeId
           With     = get.Required.Field "with"     Establishment.decodeId
           Contract = get.Required.Field "contract" decodeContract }
-    in Decode.tuple2 decodeId it
+    
+    in Decode.map2 tuple2 (Decode.field "id" decodeId) it
 
 
 type JournalId = JournalId of UniqueIdentifier
@@ -243,7 +244,7 @@ module Journal =
         { Subject       = get.Required.Field "subject"       Contact.decodeId
           Caregiver     = get.Required.Field "caregiver"     Caregiver.decodeId
           Establishment = get.Required.Field "establishment" Establishment.decodeId }
-    in Decode.tuple2 decodeId it
+    in Decode.map2 tuple2 (Decode.field "id" decodeId) it
 
 
 type Heading = HeadingKey of string
@@ -317,7 +318,7 @@ module Note =
         { Journal = get.Required.Field "journal" Journal.decodeId
           Heading = get.Required.Field "heading" decodeHeading
           Body    = get.Required.Field "body"    decodeNoteBody }
-    in Decode.tuple2 decodeId it
+    in Decode.map2 tuple2 (Decode.field "id" decodeId) it
 
 (* There are several kinds of visits, each type implies a number of Headings. *)
 type VisitationType = New | Recurring
@@ -381,7 +382,7 @@ module Visitation =
           Caregiver = get.Required.Field "caregiver" Caregiver.decodeId
           Subject   = get.Required.Field "subject"   Contact.decodeId
           Type      = get.Required.Field "type"      decodeVisitationType }
-    in Decode.tuple2 decodeId it
+    in Decode.map2 tuple2 (Decode.field "id" decodeId) it
 
 
 type Event = ContactAdded         of Timestamp * ContactInfo
