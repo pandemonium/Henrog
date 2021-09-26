@@ -1,3 +1,4 @@
+(* Henrog.Infrastructure.Persistent *)
 namespace Henrog.Domain.Archive
 
 open FSharpPlus
@@ -21,6 +22,10 @@ module Memorandum =
   open Newtonsoft.Json
   open System.IO
   module Query = Persistence.Query
+
+  let foo =
+//    HtmlDocument.Load ""
+    1
 
   let make id at aggregateId data kind =
     { Id          = id
@@ -149,10 +154,10 @@ module Query =
       let parameters =
         mapi (fun i _ -> sprintf "@%s%d" actual i)
         >> String.concat ", "
-      in function This   x -> applyOp "="
+      in function This   _ -> applyOp "="
                 | OneOf xs -> $"{formal} IN ({parameters xs})"
-                | After  x -> applyOp ">"
-                | Before x -> applyOp "<"
+                | After  _ -> applyOp ">"
+                | Before _ -> applyOp "<"
                 | Any      -> ""
 
   let (|One|_|) =

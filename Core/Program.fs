@@ -7,6 +7,7 @@ open FSharpPlus.Control
 open Henrog.Domain.Model
 open Henrog.Domain.Control
 open Henrog.Domain.Archive
+open Henrog.Core.Fejk
 
 open NodaTime
 
@@ -64,15 +65,6 @@ module Test =
     |> Query.Expression.query "e"
     |> printfn "%A"
 
-
-[<EntryPoint>]
-let main argv =
-  let run script =
-    let configuration =
-      { Persistence = { ConnectionString = "User ID=patrik;Password=;Host=localhost;Port=5432;Database=henrog;Pooling=true;" } }
-    in Environment.make (Bootstrap.makeRuntime configuration) configuration
-       |> ScriptingHost.execute script
-
   let emitPerson : unit Script =
     monad { let! at = Timestamp.now
             let! establishmentId = UniqueIdentifier.makeFresh EstablishmentId
@@ -88,15 +80,31 @@ let main argv =
                 Address  = address }
             do! EventStream.emit <| ContactAdded (at, (contactId, contact)) }
 
-  monad { let! id = UniqueIdentifier.fresh
-//          do! emitPerson
+  let emitCaregiverAdded : _ Script =
+    monad { let! id = UniqueIdentifier.fresh
+  //          do! Test.emitPerson
 
-          let! events = Query.Expression.star
-                        |> Query.evaluate
-                        |> Script.liftUnitOfWork
+            let q =
+              Query.Expression.SuchThat.kind Query.This Event.Kind.CaregiverAdded
+              |> Query.Expression.select
+              |> Query.evaluate
 
-          return events }
-  |> run (* Error condition if there is a non-empty Event Stream here? *)
+            let! events = Query.Expression.star
+                          |> Query.evaluate
+                          |> Script.liftUnitOfWork
+
+            return events }
+
+[<EntryPoint>]
+let main argv =
+  let run script =
+    let configuration =
+      { Persistence = { ConnectionString = "User ID=patrik;Password=;Host=localhost;Port=5432;Database=henrog;Pooling=true;" } }
+    in Environment.make (Bootstrap.makeRuntime configuration) configuration
+       |> ScriptingHost.execute script
+
+  Scrape.load
+//  |> run (* Error condition if there is a non-empty Event Stream here? *)
   |> printfn "%A"
 
   0

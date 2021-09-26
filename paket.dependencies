@@ -10,3 +10,5 @@ nuget NodaTime
 nuget Microsoft.Data.SqlClient
 nuget Npgsql
 nuget Npgsql.NodaTime
+
+nuget FSharp.Data

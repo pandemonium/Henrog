@@ -2,6 +2,7 @@ FSharpPlus
 Thoth.Json.Net
 NodaTime
 
+FSharp.Data
 Microsoft.Data.SqlClient
 Npgsql
 Npgsql.NodaTime
