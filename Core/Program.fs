@@ -4,10 +4,10 @@ open FSharpPlus
 open FSharpPlus.Data
 open FSharpPlus.Control
 
-open Henrog.Domain.Model
-open Henrog.Domain.Control
-open Henrog.Domain.Archive
-open Henrog.Core.Fejk
+open Henrog.Core
+open Henrog.Core.Model
+open Henrog.Core.Control
+open Henrog.Core.Archive
 
 open NodaTime
 
@@ -26,7 +26,7 @@ module Make =
     |> Query.Expression.select
 
 module Bootstrap =
-  open Henrog.Infrastructure.Persistence
+  open Henrog.Infrastructure.Database
   open Npgsql
 
   let connector configuration : Connector = 
@@ -46,7 +46,7 @@ module Bootstrap =
         member __.CurrentTime       () = SystemClock.Instance.GetCurrentInstant () }
 
 module Test =
-  let queries =
+  let queries () =
     let id   = UniqueIdentifier.make <| Guid.NewGuid ()
     let kind = Event.Kind.CaregiverAdded
 
@@ -65,29 +65,86 @@ module Test =
     |> Query.Expression.query "e"
     |> printfn "%A"
 
-  let emitPerson : unit Script =
-    monad { let! at = Timestamp.now
-            let! establishmentId = UniqueIdentifier.makeFresh EstablishmentId
-            let! contactId       = UniqueIdentifier.makeFresh ContactId
-            let address =
-              { Street     = "Kastvindsgatan"
-                PostalCode = 41134
-                City       = "Göteborg" }
+  let mkAddress (person : Fejk.Person) =
+    { Street        = person.Street
+      PostalAddress = person.PostalAddress }
+
+  let generateContact establishmentId : _ Script =
+    monad { let! at        = Timestamp.now
+            let! contactId = UniqueIdentifier.makeFresh ContactId
+            let! person    = Fejk.Scrape.parse
+
+            let parsePin (text : string) =
+              text.Split "-"
+              |> fun xs -> $"{xs.[0]}{xs.[1]}"
+              |> Int64.Parse
+
             let contact =
-              { Pin      = PersonalIdentity.unsafePersonnummer 7505264510L
+              { Pin      = parsePin person.Pin
+                           |> PersonalIdentity.unsafePersonnummer
                 To       = establishmentId
-                FullName = "Oskar Mossberg"
-                Address  = address }
-            do! EventStream.emit <| ContactAdded (at, (contactId, contact)) }
+                FullName = person.Name
+                Address  = mkAddress person }
+            do! EventStream.emit <| ContactAdded (at, (contactId, contact)) 
+            return contactId }
 
-  let emitCaregiverAdded : _ Script =
+  let generateCaregiver establishmentId : _ Script = 
+    monad { let! at        = Timestamp.now
+            let! id        = UniqueIdentifier.makeFresh CaregiverId
+            let! contactId = generateContact establishmentId
+           
+            let caregiver =
+              { Self     = contactId
+                With     = establishmentId
+                Contract = Contract.unsafeContract 1257 }
+        
+            do! EventStream.emit <| CaregiverAdded (at, (id, caregiver))
+            return id }
+
+  let generateEstablishment : _ Script = 
+    monad { let! at = Timestamp.now
+            let! id = UniqueIdentifier.makeFresh EstablishmentId
+            let! x  = Fejk.Scrape.parse
+            let establishment =
+              { Name    = $"{x.Name}s etablering"
+                Address = mkAddress x }
+        
+            do! EventStream.emit <| EstablishmentCreated (at, (id, establishment))
+        
+            return id }
+
+  let generateJournal establishmentId caregiverId : _ Script = 
+    monad { let! at      = Timestamp.now
+            let! id      = UniqueIdentifier.makeFresh JournalId
+            let! subject = generateContact establishmentId
+        
+            let journal =
+              { Subject       = subject
+                Caregiver     = caregiverId
+                Establishment = establishmentId }
+        
+            do! EventStream.emit <| JournalCreated (at, (id, journal))
+        
+            return id }
+
+  let rec performN (theThing : 'a Script ) : int -> 'a list Script =
+    function 0 -> result []
+           | n -> monad { let! x = theThing
+                          let! xs = performN theThing (n - 1)
+                          return x::xs }
+
+  let generateEstablishmentWithData count : _ Script = monad {
+    let! establishmentId = generateEstablishment
+    let! caregiverId     = generateCaregiver establishmentId
+
+    return! performN <| generateJournal establishmentId caregiverId
+                     <| count
+  }
+
+  let doQueries : _ Script =
     monad { let! id = UniqueIdentifier.fresh
-  //          do! Test.emitPerson
-
-            let q =
-              Query.Expression.SuchThat.kind Query.This Event.Kind.CaregiverAdded
-              |> Query.Expression.select
-              |> Query.evaluate
+            let q = Query.Expression.SuchThat.kind Query.This Event.Kind.ContactAdded
+                    |> Query.Expression.select
 
             let! events = Query.Expression.star
                           |> Query.evaluate
@@ -103,8 +160,10 @@ let main argv =
     in Environment.make (Bootstrap.makeRuntime configuration) configuration
        |> ScriptingHost.execute script
 
-  Scrape.load
-//  |> run (* Error condition if there is a non-empty Event Stream here? *)
+//  Scrape.load
+  (Test.generateEstablishmentWithData 10 |> EventStream.flush)
+  *> Test.doQueries
+  |> run (* Error condition if there is a non-empty Event Stream here? *)
   |> printfn "%A"
 
   0

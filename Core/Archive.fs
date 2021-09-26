@@ -1,5 +1,5 @@
 (* Henrog.Infrastructure.Persistent *)
-namespace Henrog.Domain.Archive
+namespace Henrog.Core.Archive
 
 open FSharpPlus
 open FSharpPlus.Data
@@ -8,7 +8,7 @@ open FSharpPlus.Control
 open Thoth.Json.Net
 
 open Henrog.Infrastructure
-open Henrog.Domain.Model
+open Henrog.Core.Model
 
 
 type Memorandum =
@@ -21,11 +21,7 @@ type Memorandum =
 module Memorandum =
   open Newtonsoft.Json
   open System.IO
-  module Query = Persistence.Query
-
-  let foo =
-//    HtmlDocument.Load ""
-    1
+  module Query = Database.Query
 
   let make id at aggregateId data kind =
     { Id          = id
@@ -52,7 +48,7 @@ module Memorandum =
     in Decode.fromValue "$" resolveDecoder value
        |> Result.mapError Json
 
-  let read : Memorandum Out Persistence.Query = 
+  let read : Memorandum Out Database.Query = 
     monad { let! id            = UniqueIdentifier.make     <!> Query.getGuid
             let! correlationId = UniqueIdentifier.make     <!> Query.getGuid
             let! at            = Query.getInstant
@@ -62,7 +58,7 @@ module Memorandum =
 
             return make id at aggregateId <!> data <*> kind }
 
-  let write correlationId (memo : Memorandum) : unit Persistence.UnitOfWork =
+  let write correlationId (memo : Memorandum) : unit Database.UnitOfWork =
     let insert = 
       """INSERT
            INTO journal (event_id, correlation_id, at, kind, aggregate_id, data)
@@ -74,8 +70,8 @@ module Memorandum =
          Kind          = memo.Kind     |> Event.Kind.name
          AggregateId   = memo.AggregateId
          Data          = memo.Data     |> Encode.toString 0 |}
-      |> Persistence.Parameters.object
-    in ignore <!> Persistence.UnitOfWork.write insert mkRecord
+      |> Database.Parameters.object
+    in ignore <!> Database.UnitOfWork.write insert mkRecord
 
 
 type Revision =
@@ -117,7 +113,7 @@ type StreamCommit with
 
 (* Archive too? Rename ofStreamCommit to add? *)
 module PersistentRepresentation =
-  let ofStreamCommit commit : unit Persistence.UnitOfWork =
+  let ofStreamCommit commit : unit Database.UnitOfWork =
     let memoranda { Id = id; Contents = cs } = 
       tuple2 id <!> cs |> NonEmptyList.toList
 
@@ -125,7 +121,7 @@ module PersistentRepresentation =
       function Commit (revision, parent) -> memoranda revision ++ linearize parent
              | Nil                       -> []
 
-    let xs : _ Persistence.UnitOfWork =
+    let xs : _ Database.UnitOfWork =
       traverse <| uncurry Memorandum.write
                <| linearize commit
     in ignore <!> xs
@@ -170,7 +166,7 @@ module Query =
     let inline put name convert =
       function One x ->
                 convert x
-                |> Persistence.Parameter.put name
+                |> Database.Parameter.put name
                 |> Some
              | otherwise -> None
 
@@ -178,17 +174,17 @@ module Query =
       (* This name will collide with other branches using a OneOf with the same
          base parameter name. *)
       let freshName i =
-        Persistence.Parameter.put $"{name}{i}"
+        Database.Parameter.put $"{name}{i}"
       in function Many xs ->
                    convert <!> xs
                    |> mapi freshName 
-                   |> Persistence.Parameters.list
+                   |> Database.Parameters.list
                    |> Some
                 | otherwise -> None
 
     (* Term -> Persistence.Parameters State. *)
     (* The State can contain a base for fresh identifiers for array parameters. *)
-    let inline parameters term : Persistence.Parameters =
+    let inline parameters term : Database.Parameters =
       let ones = 
         [ term.Id            |> put "id"           UniqueIdentifier.asUuid 
           term.At            |> put "at"           id
@@ -196,7 +192,7 @@ module Query =
           term.AggregateId   |> put "aggregateId"  id 
           term.CorrelationId |> put "correlatonId" UniqueIdentifier.asUuid ]
         |> choose id
-        |> Persistence.Parameters.list
+        |> Database.Parameters.list
 
       let manies =
         [ term.Id            |> putMany "id"           UniqueIdentifier.asUuid 
@@ -272,18 +268,19 @@ module Query =
         function Literal t  -> Term.translate alias t
                | And (p, q) -> $"({reifyConditions p}) AND ({reifyConditions q})"
                | Or  (p, q) -> $"({reifyConditions p}) OR ({reifyConditions q})"
-      in select << where << reifyConditions
+      in select << where 
+                << reifyConditions
 
-  let evaluate (filter : Expression) : Event list Persistence.UnitOfWork = 
+  let evaluate (filter : Expression) : Event list Database.UnitOfWork = 
     monad { let text       = Expression.query "e" filter
             let parameters = Expression.parameters filter
-        
+
             let decodeMemorandum (memo : Memorandum) =
               Memorandum.decodeEvent memo.At memo.Kind memo.Data
-        
+
             let! xs =
               bind decodeMemorandum <!> Memorandum.read
-              |> fun q -> sequence <!> Persistence.Query.list q
-              |> Persistence.UnitOfWork.read text parameters
-        
+              |> fun q -> sequence <!> Database.Query.list q
+              |> Database.UnitOfWork.read text parameters
+
             return! lift xs }

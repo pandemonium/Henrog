@@ -1,12 +1,12 @@
-namespace Henrog.Domain.Control
+namespace Henrog.Core.Control
 
 open FSharpPlus
 open FSharpPlus.Data
 open FSharpPlus.Control
 
-open Henrog.Domain.Model
-open Henrog.Domain.Archive
-open Henrog.Infrastructure.Persistence
+open Henrog.Core.Model
+open Henrog.Core.Archive
+open Henrog.Infrastructure.Database
 
 
 type IRuntime =

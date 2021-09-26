@@ -1,4 +1,4 @@
-namespace Henrog.Domain.Model
+namespace Henrog.Core.Model
 
 open FSharpPlus
 open FSharpPlus.Data
@@ -83,22 +83,19 @@ module PersonalIdentity =
 
 
 type Address =
-  { Street     : string
-    PostalCode : int
-    City       : string }
+  { Street        : string
+    PostalAddress : string }
 
 module Address =
   let encode : Address Encoder = fun it ->
-    [ "street",     Encode.string it.Street
-      "postalCode", Encode.int it.PostalCode
-      "city",       Encode.string it.City ]
+    [ "street",        Encode.string it.Street
+      "postalAddress", Encode.string it.PostalAddress ]
     |> Encode.object
 
   let decode : Address Decoder =
     Decode.object <| fun get ->
-      { Street     = get.Required.Field "street"     Decode.string
-        PostalCode = get.Required.Field "postalCode" Decode.int
-        City       = get.Required.Field "city"       Decode.string }
+      { Street        = get.Required.Field "street"        Decode.string
+        PostalAddress = get.Required.Field "postalAddress" Decode.string }
 
 
 type EstablishmentId = EstablishmentId of UniqueIdentifier
@@ -172,6 +169,9 @@ module Contact =
 
 type Contract = private Code of int
 
+module Contract =
+  let unsafeContract = Code
+
 type CaregiverId = CaregiverId of UniqueIdentifier
 
 type Caregiver =
@@ -209,7 +209,6 @@ module Caregiver =
         { Self     = get.Required.Field "self"     Contact.decodeId
           With     = get.Required.Field "with"     Establishment.decodeId
           Contract = get.Required.Field "contract" decodeContract }
-    
     in Decode.map2 tuple2 (Decode.field "id" decodeId) it
 
 
@@ -465,13 +464,13 @@ module Event =
       at, info.Journal |> journalIdText, Visitation.encodeVisitationNote info
 
   let fromExternalRepresentation at : Kind -> Event Decoder =
-    let production constructor decoder =
+    let produce constructor decoder =
       Decode.map (curry constructor at) decoder
-    in function ContactAdded         -> production Event.ContactAdded         Contact.decode
-              | EstablishmentCreated -> production Event.EstablishmentCreated Establishment.decode
-              | CaregiverAdded       -> production Event.CaregiverAdded       Caregiver.decode
-              | JournalCreated       -> production Event.JournalCreated       Journal.decode
-              | NoteAdded            -> production Event.NoteAdded            Note.decode
-              | NoteSigned           -> production Event.NoteSigned           Note.decodeNoteSignature
-              | CaregiverVisited     -> production Event.CaregiverVisited     Visitation.decode
-              | VisitationNoted      -> production Event.VisitationNoted      Visitation.decodeVisitationNote
+    in function ContactAdded         -> produce Event.ContactAdded         Contact.decode
+              | EstablishmentCreated -> produce Event.EstablishmentCreated Establishment.decode
+              | CaregiverAdded       -> produce Event.CaregiverAdded       Caregiver.decode
+              | JournalCreated       -> produce Event.JournalCreated       Journal.decode
+              | NoteAdded            -> produce Event.NoteAdded            Note.decode
+              | NoteSigned           -> produce Event.NoteSigned           Note.decodeNoteSignature
+              | CaregiverVisited     -> produce Event.CaregiverVisited     Visitation.decode
+              | VisitationNoted      -> produce Event.VisitationNoted      Visitation.decodeVisitationNote

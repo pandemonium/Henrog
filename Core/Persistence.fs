@@ -1,4 +1,4 @@
-namespace Henrog.Infrastructure.Persistence
+namespace Henrog.Infrastructure.Database
 
 open FSharpPlus
 open FSharpPlus.Data
@@ -11,7 +11,8 @@ open System.Reflection
 open Microsoft.Data.SqlClient
 
 open Henrog.Infrastructure
-open Henrog.Domain.Model
+open Henrog.Core.Model
+
 
 type Connector =
   { Apply : unit -> IDbConnection }
