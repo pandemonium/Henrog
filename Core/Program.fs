@@ -66,80 +66,140 @@ module Test =
     |> printfn "%A"
 
   let mkAddress (person : Fejk.Person) =
-    { Street        = person.Street
-      PostalAddress = person.PostalAddress }
+    let postalCode, city = 
+      person.PostalAddress.Split(" ")
+      |> fun xs -> Int32.Parse $"{xs.[0]}{xs.[1]}", xs.[2]
+    in { Street        = person.Street
+         PostalCode    = postalCode
+         City          = city
+         Municipality = { Code = 1497; Seat = ""} }
 
-  let generateContact establishmentId : _ Script =
+  let generateContact locationId : _ Script =
     monad { let! at        = Timestamp.now
             let! contactId = UniqueIdentifier.makeFresh ContactId
             let! person    = Fejk.Scrape.parse
+
+            let parseAge (text : string) =
+              text.Split(" ").[0]
+              |> Int64.Parse
 
             let parsePin (text : string) =
               text.Split "-"
               |> fun xs -> $"{xs.[0]}{xs.[1]}"
               |> Int64.Parse
 
+            let century (age : int64) (pin : string) =
+              let thisYear = int64 (at.ToDateTimeUtc().Year)
+              let pinYear  = Int64.Parse pin.[0..1]
+
+              if pinYear + age < thisYear 
+                then $"20{pin}"
+                else $"19{pin}"
+
+            let pin = person.Pin
+                      |> century (parseAge person.Age)
+                      |> parsePin
+                      |> PersonalIdentity.unsafePersonnummer
+
             let contact =
-              { Pin      = parsePin person.Pin
-                           |> PersonalIdentity.unsafePersonnummer
-                To       = establishmentId
+              { Pin      = pin
+                To       = locationId
+                Gender   = BinaryGender.fromPin pin
                 FullName = person.Name
                 Address  = mkAddress person }
             do! EventStream.emit <| ContactAdded (at, (contactId, contact)) 
             return contactId }
 
-  let generateCaregiver establishmentId : _ Script = 
+  let generateCaregiver locationId : _ Script = 
     monad { let! at        = Timestamp.now
             let! id        = UniqueIdentifier.makeFresh CaregiverId
-            let! contactId = generateContact establishmentId
+            let! contactId = generateContact locationId
            
             let caregiver =
               { Self     = contactId
-                With     = establishmentId
-                Contract = Contract.unsafeContract 1257 }
+                With     = locationId
+                Contract = Code 1257 }
         
             do! EventStream.emit <| CaregiverAdded (at, (id, caregiver))
             return id }
 
-  let generateEstablishment : _ Script = 
+  let generateLocation : _ Script = 
     monad { let! at = Timestamp.now
-            let! id = UniqueIdentifier.makeFresh EstablishmentId
+            let! id = UniqueIdentifier.makeFresh LocationId
             let! x  = Fejk.Scrape.parse
-            let establishment =
-              { Name    = $"{x.Name}s etablering"
-                Address = mkAddress x }
-        
-            do! EventStream.emit <| EstablishmentCreated (at, (id, establishment))
-        
+            let location =
+              { Name     = $"{x.Name}s etablering"
+                Address  = mkAddress x }
+
+            do! EventStream.emit <| LocationRegistered (at, (id, location))
             return id }
 
-  let generateJournal establishmentId caregiverId : _ Script = 
+  let generateJournal locationId caregiverId : _ Script = 
     monad { let! at      = Timestamp.now
             let! id      = UniqueIdentifier.makeFresh JournalId
-            let! subject = generateContact establishmentId
+            let! subject = generateContact locationId
         
             let journal =
-              { Subject       = subject
-                Caregiver     = caregiverId
-                Establishment = establishmentId }
+              { Subject   = subject
+                Caregiver = caregiverId
+                Location  = locationId }
         
             do! EventStream.emit <| JournalCreated (at, (id, journal))
         
             return id }
 
-  let rec performN (theThing : 'a Script ) : int -> 'a list Script =
-    function 0 -> result []
-           | n -> monad { let! x = theThing
-                          let! xs = performN theThing (n - 1)
-                          return x::xs }
+  let random = System.Random ()
 
-  let generateEstablishmentWithData count : _ Script = monad {
-    let! establishmentId = generateEstablishment
-    let! caregiverId     = generateCaregiver establishmentId
+  let noteBodies =
+    Text <!> [| "Ramlat och slagit i huvudet."
+                "Fullt utvecklad ruptur på Levator Anii."
+                "Har ätit för mycket korv och blivit obes."
+                "Misstänkt bruk av Kalle Anka-tidningar." |]
 
-    return! performN <| generateJournal establishmentId caregiverId
-                     <| count
-  }
+  let randomNoteBody : _ Script =
+    monad { return 99. * (random.NextDouble ()) % (float noteBodies.Length)
+                   |> fun x -> noteBodies.[int x] }
+
+  let generateNote journalId : _ Script = 
+    monad { let! at   = Timestamp.now
+            let! id   = UniqueIdentifier.makeFresh NoteId
+            let! body = randomNoteBody
+        
+            let note =
+              { Journal = journalId
+                Heading = HeadingKey "Anmanes"
+                Body    = body }
+        
+            do! EventStream.emit <| NoteAdded (at, (id, note))
+        
+            return id }
+
+  let rec replicateM (m : _ Script) : int -> _ list Script =
+    function 0     -> result []
+           | count -> List.cons <!> m <*> replicateM m (count - 1)
+
+  let signNote journalId caregiverId noteId : _ Script = 
+    monad { let! at = Timestamp.now
+            let! id = UniqueIdentifier.makeFresh NoteId
+            let signature =
+              { Journal  = journalId
+                Note     = noteId
+                SignedBy = caregiverId }
+
+            return! EventStream.emit <| NoteSigned (at, signature) }
+
+  let generateLocationWithData count : _ Script = 
+    monad { let! locationId  = generateLocation
+            let! caregiverId = generateCaregiver locationId
+
+            let makeJournal = 
+              monad { let! journalId = generateJournal locationId caregiverId
+                      let! noteId    = generateNote journalId
+                      do! signNote journalId caregiverId noteId
+      
+                      return journalId }
+
+            return! makeJournal |> flip replicateM count }
 
   let doQueries : _ Script =
     monad { let! id = UniqueIdentifier.fresh
@@ -161,7 +221,7 @@ let main argv =
        |> ScriptingHost.execute script
 
 //  Scrape.load
-  (Test.generateEstablishmentWithData 10 |> EventStream.flush)
+  (Test.generateLocationWithData 100 |> EventStream.flush)
   *> Test.doQueries
   |> run (* Error condition if there is a non-empty Event Stream here? *)
   |> printfn "%A"

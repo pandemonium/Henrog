@@ -11,6 +11,7 @@
     <Compile Include="Persistence.fs" />
     <Compile Include="Archive.fs" />
     <Compile Include="Control.fs" />
+    <Compile Include="VisitationsFile.fs" />
     <Compile Include="Fejk.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

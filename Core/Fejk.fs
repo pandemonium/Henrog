@@ -14,7 +14,8 @@ type Person =
     Street        : string
     PostalAddress : string
     Phone         : string
-    Pin           : string }
+    Pin           : string 
+    Age           : string }
 
 module Person =
   let parse (fields : Map<string, string>) : Person =
@@ -22,7 +23,8 @@ module Person =
       Street        = Map.find "Gata:"         fields
       PostalAddress = Map.find "Postort:"      fields
       Phone         = Map.find "Telefon:"      fields
-      Pin           = Map.find "Personnummer:" fields }
+      Pin           = Map.find "Personnummer:" fields 
+      Age           = Map.find "Ålder:"        fields }
 
 module Scrape =
   let (|Cons|Nil|) (xs : _ seq) =
