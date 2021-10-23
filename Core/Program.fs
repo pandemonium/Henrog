@@ -221,9 +221,10 @@ let main argv =
        |> ScriptingHost.execute script
 
 //  Scrape.load
-  (Test.generateLocationWithData 100 |> EventStream.flush)
-  *> Test.doQueries
-  |> run (* Error condition if there is a non-empty Event Stream here? *)
+//  (Test.generateLocationWithData 100 |> EventStream.flush)
+//  *> Test.doQueries
+//  |> run (* Error condition if there is a non-empty Event Stream here? *)
+  Henrog.Xml.ParseRunner.run
   |> printfn "%A"
 
   0

@@ -169,6 +169,18 @@ module BinaryGender =
     >> function n when n / 10L % 2L = 0L -> Female 
               | otherwise                -> Male
 
+  let encode =
+    function Male   -> Encode.string "M"
+           | Female -> Encode.string "F"
+
+  let decode : BinaryGender Decoder =
+    let it =
+      function "M"       -> Decode.succeed Male
+             | "F"       -> Decode.succeed Female
+             | otherwise -> Decode.fail $"No such gender `{otherwise}`."
+    in Decode.string
+       |> Decode.andThen it
+
 type Contact =
   { Pin      : PersonalIdentity
     To       : LocationId
@@ -186,15 +198,11 @@ module Contact =
   let encodeId : ContactId Encoder = fun (ContactId uuid) ->
     UniqueIdentifier.encode uuid
 
-  let encodeBinaryGender =
-    function Male   -> Encode.string "M"
-           | Female -> Encode.string "F"
-
   let encode : ContactInfo Encoder = fun (id, it) ->
     [ "id",       encodeId                id
       "pin",      PersonalIdentity.encode it.Pin
       "to",       Location.encodeId       it.To
-      "gender",   encodeBinaryGender      it.Gender
+      "gender",   BinaryGender.encode     it.Gender
       "fullName", Encode.string           it.FullName 
       "address",  Address.encode          it.Address ]
     |> Encode.object
@@ -202,20 +210,12 @@ module Contact =
   let decodeId : ContactId Decoder =
     UniqueIdentifier.decode |> Decode.map ContactId
 
-  let decodeBinaryGender : BinaryGender Decoder =
-    let it =
-      function "M"       -> Decode.succeed Male
-             | "F"       -> Decode.succeed Female
-             | otherwise -> Decode.fail $"No such gender `{otherwise}`."
-    in Decode.string
-       |> Decode.andThen it
-
   let decode : ContactInfo Decoder =
     let it =
       Decode.object <| fun get ->
         { Pin      = get.Required.Field "pin"      PersonalIdentity.decode
           To       = get.Required.Field "to"       Location.decodeId
-          Gender   = get.Required.Field "gender"   decodeBinaryGender
+          Gender   = get.Required.Field "gender"   BinaryGender.decode
           FullName = get.Required.Field "fullName" Decode.string 
           Address  = get.Required.Field "address"  Address.decode }
     in Decode.map2 tuple2 (Decode.field "id" decodeId) it
@@ -278,10 +278,10 @@ module Journal =
     UniqueIdentifier.encode uuid
 
   let encode : JournalInfo Encoder = fun (id, it) ->
-    [ "id",            encodeId               id
-      "subject",       Contact.encodeId       it.Subject 
-      "caregiver",     Caregiver.encodeId     it.Caregiver 
-      "location",      Location.encodeId      it.Location ]
+    [ "id",        encodeId           id
+      "subject",   Contact.encodeId   it.Subject 
+      "caregiver", Caregiver.encodeId it.Caregiver 
+      "location",  Location.encodeId  it.Location ]
     |> Encode.object
 
   let decodeId : JournalId Decoder =

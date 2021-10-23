@@ -16,12 +16,12 @@ type IRuntime =
   abstract CurrentTime     : unit -> Timestamp
 
 type Environment =
-  { Interpreter   : IRuntime 
+  { Runtime       : IRuntime 
     Configuration : Configuration }
 
 module Environment =
   let make interpreter configuration =
-    { Interpreter   = interpreter
+    { Runtime       = interpreter
       Configuration = configuration }
 
 type 'a EventStream = 'a * StreamCommit
@@ -47,13 +47,13 @@ module Script =
 
   let liftUnitOfWork work : 'a Script = 
     monad { let! context = context
-            return! context.Environment.Interpreter.RunUnitOfWork work
+            return! context.Environment.Runtime.RunUnitOfWork work
                     |> liftOut }
 
   let makeContext env : Context =
     { Environment   = env
-      CorrelationId = env.Interpreter.FreshIdentifier ()
-      Started       = env.Interpreter.CurrentTime () }
+      CorrelationId = env.Runtime.FreshIdentifier ()
+      Started       = env.Runtime.CurrentTime () }
 
   (* Does this keep the Event Stream? *)
   (* Is this usable somehow? *)
@@ -73,13 +73,13 @@ module Script =
 module Timestamp =
   let now : Timestamp Script =
     monad { let! run = ask
-            return run.Environment.Interpreter.CurrentTime () }
+            return run.Environment.Runtime.CurrentTime () }
 
 
 module UniqueIdentifier =
   let fresh : UniqueIdentifier Script =
     monad { let! context = Script.context
-            return context.Environment.Interpreter.FreshIdentifier () }
+            return context.Environment.Runtime.FreshIdentifier () }
 
   let makeFresh constructor =
     constructor <!> fresh

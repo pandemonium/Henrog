@@ -4,5 +4,7 @@ NodaTime
 
 FSharp.Data
 Microsoft.Data.SqlClient
+System.Xml.Linq
+
 Npgsql
 Npgsql.NodaTime

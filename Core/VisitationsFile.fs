@@ -21,3 +21,14 @@ type Visit =
 type VisitationsFileInfo =
   { Caregiver : Model.Caregiver
     Visits    : Visit list }
+
+type Record = private Fields of string []
+
+module Record =
+  type S = State<Record list, unit>
+
+  let set ix value : S =
+    failwith "hi"
+
+  let emit : S =
+    failwith "hi"

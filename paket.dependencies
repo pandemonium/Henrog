@@ -8,7 +8,8 @@ nuget Thoth.Json.Net
 nuget NodaTime
 
 nuget Microsoft.Data.SqlClient
+nuget FSharp.Data
+nuget System.Xml.Linq
+
 nuget Npgsql
 nuget Npgsql.NodaTime
-
-nuget FSharp.Data
