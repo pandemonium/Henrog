@@ -1,6 +1,7 @@
 namespace Henrog.Xml
 
 open System
+open System.Xml.Linq
 
 open FSharpPlus
 open FSharpPlus.Data
@@ -8,7 +9,8 @@ open FSharpPlus.Control
 
 open Henrog.Core.Model
 
-module Output =
+
+module Encode =
   type Document =
     { Encoding : Text.Encoding
       Root     : Node }
@@ -29,18 +31,16 @@ module Output =
                 | Uri        of uri : string
                 | Default
 
-  module Node =
-    let element name attributes children : Node =
-      { Name       = name
-        Attributes = attributes
-        Children   = children }
-      |> Element
+  let element name attributes children : Node =
+    { Name       = name
+      Attributes = attributes
+      Children   = children }
+    |> Element
 
-    let text = Text
+  let text = Text
 
-  module Attribute =
-    let make =
-      curry Attribute
+  let attribute =
+    curry Attribute
 
   module Name =
     let inSpace = curry Namespaced
@@ -68,16 +68,14 @@ module Output =
       let attribute =
         function Attribute (n, v) -> $"{name n}=\"{v}\"" | Empty -> ""
 
-      let strings = String.concat
-
       let rec node =
         function Element { Name = n; Attributes = atts; Children = cs } -> 
                  let elName     = name n
-                 let children   = node <!> cs |> strings ""
+                 let children   = node <!> cs |> String.concat ""
                  let attributes = 
                    if atts.IsEmpty then ""
                    else attribute <!> atts
-                        |> fun xs -> $""" {strings " " xs}"""
+                        |> fun xs -> $""" {String.concat " " xs}"""
                  in $"<{elName}{attributes}>{children}</{elName}>"
                | Text t -> t
 
@@ -86,57 +84,34 @@ module Output =
          |> String.stripMargin
 
 
-module Parsing =
-  open System.Xml.Linq
+type Parser<'a, 'e> = ReaderT<'e Automaton, 'a ParseResult>
 
-  (* Could have parser have XDocument as env instead. Add a root combinator
-     and others to read other interesting stuff in the document. *)
+and 'a Decoder = Parser<'a, XElement>
 
-  type 'a Parser = ReaderT<XElement Context, 'a ParseResult>
+and 'a Read    = Parser<'a, string>
 
-  and 'a Read    = ReaderT<string Context, 'a ParseResult>
+and 'a Automaton =
+  { History : Went list
+    Locus   : 'a }
 
-  and 'a Context =
-    { History : Went list
-      Locus   : 'a }
+and Went = Child     of XName
+         | Attribute of XName
+         | Text
 
-  and Went = Child     of XName
-           | Attribute of XName
-           | Text
+and 'a ParseResult = Result<'a, ParseError>
 
-  and 'a ParseResult = Result<'a, ParseError>
+and ParseError = NoSuchElement   of history : Went list * unknown : XName
+               | NoSuchAttribute of history : Went list * unknown : XName
+               | BadFormat       of history : Went list * expected : string * was : string
 
-  and ParseError = NoSuchElement   of history : Went list * unknown : XName
-                 | NoSuchAttribute of history : Went list * unknown : XName
-                 | BadFormat       of history : Went list * expected : string * was : string
+module private Automaton =  
+  let make locus =
+    { History = []; Locus = locus }
 
-  module Shows =
-    let xname (xn : XName) =
-      $"`{xn.LocalName}` ({xn.NamespaceName})"
+  let locus { Locus = f } = f
 
-    let went =
-      function Child name     -> $"Child {xname name}"
-             | Attribute name -> $"Attribute {xname name}"
-             | Text           -> $"Text"
-
-    let history (h : Went list) =
-      went <!> h |> fun xs -> $"""-> {String.concat "\n-> " xs}"""
-
-    let parseError =
-      function NoSuchElement (h, unknown)   -> 
-                $"History:\n{history h}\n-> Child `{xname unknown}` was not found."
-             | NoSuchAttribute (h, unknown) -> 
-                $"History:\n{history h}\n-> Attribute `{xname unknown}` was not found."
-             | BadFormat (h, expected, was) -> 
-                $"History:\n{history h}\nRead `{was}`, expected {expected}."
-
-  module Context =  
-    let make locus =
-      { History = []; Locus = locus }
-
-    let locus { Locus = f } = f
-
-    let inline private went locus went (context : _ Context) : _ Context =
+  module Goto =
+    let inline private went locus went (context : _ Automaton) : _ Automaton =
       { History = went :: context.History
         Locus   = locus }
 
@@ -149,60 +124,83 @@ module Parsing =
     let inline text locus =
       local (went locus Text)
 
+module Shows =
+  let xname (xn : XName) =
+    $"`{xn.LocalName}` ({xn.NamespaceName})"
+
+  let went =
+    function Child name     -> $"Child {xname name}"
+           | Attribute name -> $"Attribute {xname name}"
+           | Text           -> $"Text"
+
+  let history (h : Went list) =
+    went <!> h |> fun xs -> $"""-> {String.concat "\n-> " xs}"""
+
+  let parseError =
+    function NoSuchElement (h, unknown)   -> 
+              $"History:\n{history h}\n-> Child `{xname unknown}` was not found."
+           | NoSuchAttribute (h, unknown) -> 
+              $"History:\n{history h}\n-> Attribute `{xname unknown}` was not found."
+           | BadFormat (h, expected, was) -> 
+              $"History:\n{history h}\nRead `{was}`, expected {expected}."
+
+module Decode =
+  (* Could have parser have XDocument as env instead. Add a root combinator
+     and others to read other interesting stuff in the document. *)
+
   let name x = XName.Get(x)
 
   module Read =
     open NodaTime
 
-    let context : string Context Read = ask
+    let context : string Automaton Read = ask
 
     let inline private read spec : ^a Read = 
-      monad { let! self = context
-              match tryParse self.Locus with
-              | Some i    -> return i
-              | otherwise -> return! throw <| BadFormat (self.History, spec, self.Locus) }
+      context >>= fun self ->
+        match tryParse self.Locus with
+        | Some i    -> result i
+        | otherwise -> throw <| BadFormat (self.History, spec, self.Locus)
 
     let int : int Read = read "int"
 
-    let string : string Read = Context.locus <!> context
+    let string : string Read = Automaton.locus <!> context
 
-    let structured (pattern : 'a Text.IPattern) : 'a Read = 
-      monad { let! self = context
-              match pattern.Parse self.Locus with
-              | r when r.Success -> return r.Value
-              | otherwise        -> return! throw <| BadFormat (self.History, pattern.ToString (), self.Locus) }
-
+    let structured (pattern : 'a Text.IPattern) : 'a Read =
+      context >>= fun self ->
+        match pattern.Parse self.Locus with
+        | r when r.Success -> result r.Value
+        | otherwise        -> throw <| BadFormat (self.History, pattern.ToString (), self.Locus)
   
-  module At =
-    let context : XElement Context Parser = ask
+  let context : XElement Automaton Decoder = ask
 
-    let child name parser : _ Parser =
-      context >>= fun self ->
-        match self.Locus.Element name with
-        | null  -> throw <| NoSuchElement (self.History, name)
-        | child -> Context.child name child parser
+  let child name parser : _ Decoder =
+    context >>= fun self ->
+      match self.Locus.Element name with
+                     (* This should move into Automaton. *)
+      | null  -> throw <| NoSuchElement (self.History, name)
+      | child -> Automaton.Goto.child name child parser
 
-    let attribute name read : _ Parser =
-      context >>= fun self ->
-        match self.Locus.Attribute name with
-        | null      -> throw <| NoSuchAttribute (self.History, name)
-        | attribute -> Context.attribute name attribute.Value read
+  let attribute name read : _ Decoder =
+    context >>= fun self ->
+      match self.Locus.Attribute name with
+                     (* This should move into Automaton. *)
+      | null      -> throw <| NoSuchAttribute (self.History, name)
+      | attribute -> Automaton.Goto.attribute name attribute.Value read
 
-    let text (read : _ Read) : _ Parser =
-      context >>= fun self -> 
-        Context.text self.Locus.Value read
+  let text (read : _ Read) : _ Decoder =
+    context >>= fun self -> 
+      Automaton.Goto.text self.Locus.Value read
 
-    let textChild name =
-      child name << text
+  let textChild name =
+    child name << text
 
-  let parse (parser : _ Parser) root =
-    Context.make root
+  let fromRootElement (parser : _ Decoder) root =
+    Automaton.make root
     |> ReaderT.run parser
 
 
 module ParseRunner =
   open System.Xml.Linq
-  open Parsing
 
   let run =
     let xml = 
@@ -214,32 +212,31 @@ module ParseRunner =
     let html n = XName.Get(n, NS)
 
     let getSome = 
-      monad { let! style = At.attribute (html "style") Read.string
-              let! date  = At.attribute (html "data") 
-                           <| Read.structured NodaTime.Text.LocalDatePattern.Iso
+      monad { let! style = Decode.attribute (html "style") Decode.Read.string
+              let! date  = Decode.attribute (html "data") 
+                           <| Decode.Read.structured NodaTime.Text.LocalDatePattern.Iso
               return style, date }
 
     let inline at path =
-      At.child <!> path |> List.reduce (<<)
+      Decode.child <!> path |> List.reduce (<<)
 
-    let parser : _ Parser = 
+    let parser : _ Decoder = 
       monad { let! x = at [ html "body"; html "p" ] getSome
               return x }
 
     XDocument.Parse(xml).Root
-    |> Parsing.parse parser
+    |> Decode.fromRootElement parser
     |> Result.mapError Shows.parseError
 
 module Runner =
-  open Output
+  open Encode
 
   let ns    = Default
   let xmlns = Namespace.withPrefix "http://www.w3.org/TR/html4/" "html"
   let name  = Name.inSpace xmlns
-  let el    = name >> Node.element
-  let text  = Node.text
+  let el    = name >> element
   let attr =
-    name >> Attribute.make
+    name >> attribute
 
   let run =
     el "html" [ Namespace.declare xmlns ] 
