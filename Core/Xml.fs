@@ -43,8 +43,8 @@ module Output =
       curry Attribute
 
   module Name =
-    let inSpace space = curry Namespaced space
-    
+    let inSpace = curry Namespaced
+
   module Namespace =
     let withPrefix uri prefix = WithPrefix (uri, prefix)
     let uri                   = Uri
@@ -97,37 +97,57 @@ module Parsing =
   and 'a Read    = ReaderT<string Context, 'a ParseResult>
 
   and 'a Context =
-    { History : Goto list
-      Focus   : 'a }
+    { History : Went list
+      Locus   : 'a }
 
-  and Goto = Child     of XName
+  and Went = Child     of XName
            | Attribute of XName
            | Text
 
   and 'a ParseResult = Result<'a, ParseError>
 
-  and ParseError = NoSuchElement   of history : Goto list * unknown : XName
-                 | NoSuchAttribute of history : Goto list * unknown : XName
-                 | BadFormat       of history : Goto list * expeced : string * was : string
+  and ParseError = NoSuchElement   of history : Went list * unknown : XName
+                 | NoSuchAttribute of history : Went list * unknown : XName
+                 | BadFormat       of history : Went list * expected : string * was : string
+
+  module Shows =
+    let xname (xn : XName) =
+      $"`{xn.LocalName}` ({xn.NamespaceName})"
+
+    let went =
+      function Child name     -> $"Child {xname name}"
+             | Attribute name -> $"Attribute {xname name}"
+             | Text           -> $"Text"
+
+    let history (h : Went list) =
+      went <!> h |> fun xs -> $"""-> {String.concat "\n-> " xs}"""
+
+    let parseError =
+      function NoSuchElement (h, unknown)   -> 
+                $"History:\n{history h}\n-> Child `{xname unknown}` was not found."
+             | NoSuchAttribute (h, unknown) -> 
+                $"History:\n{history h}\n-> Attribute `{xname unknown}` was not found."
+             | BadFormat (h, expected, was) -> 
+                $"History:\n{history h}\nRead `{was}`, expected {expected}."
 
   module Context =  
-    let make focus =
-      { History = []; Focus = focus }
+    let make locus =
+      { History = []; Locus = locus }
 
-    let focus { Focus = f } = f
+    let locus { Locus = f } = f
 
-    let inline private goto (x : 'b) push (context : 'a Context) : 'b Context =
-      { History = push :: context.History
-        Focus   = x }
+    let inline private went locus went (context : _ Context) : _ Context =
+      { History = went :: context.History
+        Locus   = locus }
 
-    let inline child name it (p : 'a Parser) : 'a Parser =
-      local (goto it <| Child name) p
+    let inline child name locus =
+      local (went locus <| Child name)
 
-    let inline attribute name it (r : _ Read) : _ Parser =
-      local (goto it <| Attribute name) r
+    let inline attribute name locus =
+      local (went locus <| Attribute name)
 
-    let inline text it =
-      local (goto it Text)
+    let inline text locus =
+      local (went locus Text)
 
   let name x = XName.Get(x)
 
@@ -138,39 +158,39 @@ module Parsing =
 
     let inline private read spec : ^a Read = 
       monad { let! self = context
-              match tryParse self.Focus with
+              match tryParse self.Locus with
               | Some i    -> return i
-              | otherwise -> return! throw <| BadFormat (self.History, spec, self.Focus) }
+              | otherwise -> return! throw <| BadFormat (self.History, spec, self.Locus) }
 
     let int : int Read = read "int"
 
-    let string : string Read = Context.focus <!> context
+    let string : string Read = Context.locus <!> context
 
     let structured (pattern : 'a Text.IPattern) : 'a Read = 
       monad { let! self = context
-              match pattern.Parse self.Focus with
+              match pattern.Parse self.Locus with
               | r when r.Success -> return r.Value
-              | otherwise        -> return! throw <| BadFormat (self.History, pattern.ToString (), self.Focus) }
+              | otherwise        -> return! throw <| BadFormat (self.History, pattern.ToString (), self.Locus) }
 
   
-  module Element =
+  module At =
     let context : XElement Context Parser = ask
 
     let child name parser : _ Parser =
       context >>= fun self ->
-        match self.Focus.Element name with
+        match self.Locus.Element name with
         | null  -> throw <| NoSuchElement (self.History, name)
         | child -> Context.child name child parser
 
     let attribute name read : _ Parser =
       context >>= fun self ->
-        match self.Focus.Attribute name with
+        match self.Locus.Attribute name with
         | null      -> throw <| NoSuchAttribute (self.History, name)
         | attribute -> Context.attribute name attribute.Value read
 
     let text (read : _ Read) : _ Parser =
       context >>= fun self -> 
-        Context.text self.Focus.Value read
+        Context.text self.Locus.Value read
 
     let textChild name =
       child name << text
@@ -187,29 +207,28 @@ module ParseRunner =
   let run =
     let xml = 
       """|<?xml version='1.0' encoding='utf-8'?>
-         |<html:html xmlns:html="http://www.w3.org/TR/html4/"><html:head><html:title>Hello, world</html:title></html:head><html:body html:onload="alert('Foofoo');"><html:p html:style="font-family='Verdana';" html:data="2021-12-29">Jahaja?</html:p></html:body></html:html>"""
+         |<html:html xmlns:html="http://www.w3.org/TR/html4/"><html:head><html:title>Hello, world</html:title></html:head><html:body html:onload="alert('Foofoo');"><html:p html:style="font-family='Verdana';" html:data="2021-12- 29">Jahaja?</html:p></html:body></html:html>"""
       |> String.stripMargin
 
     let NS = "http://www.w3.org/TR/html4/"
     let html n = XName.Get(n, NS)
 
     let getSome = 
-      monad { let! style = Element.attribute (html "style") Read.string
-              let! date  = Element.attribute (html "data") 
+      monad { let! style = At.attribute (html "style") Read.string
+              let! date  = At.attribute (html "data") 
                            <| Read.structured NodaTime.Text.LocalDatePattern.Iso
               return style, date }
 
     let inline at path =
-      Element.child <!> path |> List.reduce (<<)
+      At.child <!> path |> List.reduce (<<)
 
-    let parser : _ Parser = monad {
-      let! x = at [ html "body"; html "p" ] getSome
-
-      return x
-    }
+    let parser : _ Parser = 
+      monad { let! x = at [ html "body"; html "p" ] getSome
+              return x }
 
     XDocument.Parse(xml).Root
     |> Parsing.parse parser
+    |> Result.mapError Shows.parseError
 
 module Runner =
   open Output
